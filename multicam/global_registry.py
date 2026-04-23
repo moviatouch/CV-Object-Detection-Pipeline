@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-from vending_pickup_putback.config import (
+from config import (
     BASE_BUFFER_MS,
     EMBEDDING_SIM_THRESHOLD,
     ENFORCE_CLASS_CONSISTENCY,
@@ -24,8 +24,8 @@ from vending_pickup_putback.config import (
     TEMPORAL_IOU_THRESHOLD,
     VELOCITY_BUFFER_FACTOR,
 )
-from vending_pickup_putback.utils.roi_utils import angle_between, bbox_iou, cosine_similarity
-from vending_pickup_putback.utils.types import GlobalTrack, TrackObservation, TrackUpdate
+from utils.roi_utils import angle_between, bbox_iou, cosine_similarity
+from utils.types import GlobalTrack, TrackObservation, TrackUpdate
 
 LOGGER = logging.getLogger("vending_pipeline.registry")
 

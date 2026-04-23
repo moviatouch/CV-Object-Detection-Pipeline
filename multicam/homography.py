@@ -6,7 +6,7 @@ from typing import Sequence
 import cv2
 import numpy as np
 
-from vending_pickup_putback.config import HOMOGRAPHY_MAX_ERROR
+from config import HOMOGRAPHY_MAX_ERROR
 
 
 def compute_homography(src_points: Sequence[Sequence[float]], dst_points: Sequence[Sequence[float]]) -> np.ndarray:

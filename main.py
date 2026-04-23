@@ -14,7 +14,7 @@ import numpy as np
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from vending_pickup_putback.config import (
+from config import (
     DETECTION_MODEL_CONFIDENCE,
     DETECTION_DEBUG_LOG_INTERVAL,
     DETECTION_FUSION_IOU,
@@ -32,14 +32,14 @@ from vending_pickup_putback.config import (
     SHOW_PREVIEW,
     TRACK_STATUS_INTERVAL,
 )
-from vending_pickup_putback.detection.rtdetr_wrapper import RTDETRDetector
-from vending_pickup_putback.event.event_manager import EventManager
-from vending_pickup_putback.motion.motion_analyzer import MotionAnalyzer
-from vending_pickup_putback.multicam.global_registry import GlobalRegistry
-from vending_pickup_putback.multicam.homography import HomographyContext
-from vending_pickup_putback.tracking.single_camera_tracker import SingleCameraTracker
-from vending_pickup_putback.utils.logger import setup_logger
-from vending_pickup_putback.utils.roi_utils import (
+from detection.rtdetr_wrapper import RTDETRDetector
+from event.event_manager import EventManager
+from motion.motion_analyzer import MotionAnalyzer
+from multicam.global_registry import GlobalRegistry
+from multicam.homography import HomographyContext
+from tracking.single_camera_tracker import SingleCameraTracker
+from utils.logger import setup_logger
+from utils.roi_utils import (
     bbox_iou,
     clip_bbox,
     compute_edge_normals,
@@ -49,9 +49,9 @@ from vending_pickup_putback.utils.roi_utils import (
     project_bbox,
     transform_point,
 )
-from vending_pickup_putback.utils.types import Detection
-from vending_pickup_putback.utils.video_processor import AnnotatedVideoWriter, SynchronizedVideoReader
-from vending_pickup_putback.utils.visualization import (
+from utils.types import Detection
+from utils.video_processor import AnnotatedVideoWriter, SynchronizedVideoReader
+from utils.visualization import (
     compose_preview_grid,
     draw_camera_header,
     draw_event_history,

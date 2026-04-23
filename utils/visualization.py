@@ -5,7 +5,7 @@ from typing import Dict
 import cv2
 import numpy as np
 
-from vending_pickup_putback.utils.types import GlobalTrack
+from utils.types import GlobalTrack
 
 
 def _as_int_box(bbox: tuple[float, float, float, float]) -> tuple[int, int, int, int]:

@@ -7,7 +7,7 @@ from typing import Dict, Iterable, List, Sequence, Tuple
 import cv2
 import numpy as np
 
-from vending_pickup_putback.config import ROI_MARGIN_PX, WARP_SIZE
+from config import ROI_MARGIN_PX, WARP_SIZE
 
 
 def as_np(points: Sequence[Sequence[float]]) -> np.ndarray:

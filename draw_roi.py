@@ -11,9 +11,9 @@ import numpy as np
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from vending_pickup_putback.config import ROI_CONFIG_DIR
-from vending_pickup_putback.multicam.homography import HomographyContext
-from vending_pickup_putback.utils.roi_utils import roi_payload, save_roi_payload
+from config import ROI_CONFIG_DIR
+from multicam.homography import HomographyContext
+from utils.roi_utils import roi_payload, save_roi_payload
 
 
 class RoiCollector:

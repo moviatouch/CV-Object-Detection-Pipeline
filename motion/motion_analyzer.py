@@ -4,9 +4,9 @@ from typing import Sequence
 
 import numpy as np
 
-from vending_pickup_putback.config import DEADBAND, MIN_PICKUP_DISPLACEMENT, MIN_PUTBACK_DISPLACEMENT
-from vending_pickup_putback.utils.roi_utils import nearest_edge_normal
-from vending_pickup_putback.utils.types import GlobalTrack
+from config import DEADBAND, MIN_PICKUP_DISPLACEMENT, MIN_PUTBACK_DISPLACEMENT
+from utils.roi_utils import nearest_edge_normal
+from utils.types import GlobalTrack
 
 
 class MotionAnalyzer:

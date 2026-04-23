@@ -7,8 +7,8 @@ from typing import List
 import cv2
 import numpy as np
 
-from vending_pickup_putback.config import DETECTION_MODEL_CONFIDENCE
-from vending_pickup_putback.utils.types import Detection
+from config import DETECTION_MODEL_CONFIDENCE
+from utils.types import Detection
 
 # Set up module-level logger
 LOGGER = logging.getLogger("vending_pipeline.detector")

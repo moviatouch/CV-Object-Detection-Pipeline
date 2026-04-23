@@ -4,7 +4,7 @@ import logging
 from collections import defaultdict, deque
 from typing import Deque, Dict, List
 
-from vending_pickup_putback.config import (
+from config import (
     CLASS_RETURN_MAX_GAP_MS,
     CONFIRM_FRAMES,
     CONF_MIN_FRAME,
@@ -22,8 +22,8 @@ from vending_pickup_putback.config import (
     PRINT_DEBUG_EVENTS,
     STABILITY_FRAMES,
 )
-from vending_pickup_putback.utils.roi_utils import bbox_iou
-from vending_pickup_putback.utils.types import GlobalTrack, SessionSummary
+from utils.roi_utils import bbox_iou
+from utils.types import GlobalTrack, SessionSummary
 
 LOGGER = logging.getLogger("vending_pipeline.events")
 

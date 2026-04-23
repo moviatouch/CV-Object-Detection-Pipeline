@@ -8,16 +8,16 @@ from typing import Dict, List, Optional
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
-from vending_pickup_putback.config import (
+from config import (
     LOCAL_TRACK_MAX_DISTANCE_NORM,
     LOCAL_TRACK_MAX_MISSES,
     LOCAL_TRACK_MIN_SIMILARITY,
     TEMPORAL_IOU_THRESHOLD,
     TRACK_EMBEDDING_BANK,
 )
-from vending_pickup_putback.motion.optical_flow import propagate_bbox_lk
-from vending_pickup_putback.utils.roi_utils import bbox_iou, cosine_similarity, point_in_polygon
-from vending_pickup_putback.utils.types import Detection, TrackObservation
+from motion.optical_flow import propagate_bbox_lk
+from utils.roi_utils import bbox_iou, cosine_similarity, point_in_polygon
+from utils.types import Detection, TrackObservation
 
 
 @dataclass

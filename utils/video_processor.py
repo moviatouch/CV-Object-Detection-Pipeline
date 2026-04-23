@@ -7,15 +7,15 @@ from typing import Dict, Optional
 import cv2
 import numpy as np
 
-from vending_pickup_putback.config import (
+from config import (
     ANNOTATION_FPS_FALLBACK,
     CLAHE_CLIP_LIMIT,
     CLAHE_TILE_GRID,
     DESYNC_TOLERANCE_FRAMES,
 )
-from vending_pickup_putback.motion.optical_flow import GlobalMotionEstimator
-from vending_pickup_putback.utils.roi_utils import as_np, warp_frame
-from vending_pickup_putback.utils.types import FramePacket
+from motion.optical_flow import GlobalMotionEstimator
+from utils.roi_utils import as_np, warp_frame
+from utils.types import FramePacket
 
 
 @dataclass

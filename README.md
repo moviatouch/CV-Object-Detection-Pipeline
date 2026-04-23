@@ -495,10 +495,6 @@ Output: Videos, Snapshots, Session JSON
 - **ultralytics**: RT-DETR model interface
 - **torch, torchvision, torchaudio**: Deep learning framework
 
-## License
-
-Internal Use Only
-
 ## Support
 
 For issues or questions, refer to:

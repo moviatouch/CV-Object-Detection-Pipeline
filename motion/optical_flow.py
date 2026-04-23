@@ -6,7 +6,7 @@ from typing import Optional, Sequence
 import cv2
 import numpy as np
 
-from vending_pickup_putback.config import SHAKE_FLOW_THRESHOLD
+from config import SHAKE_FLOW_THRESHOLD
 
 
 @dataclass
