@@ -2,7 +2,7 @@ from __future__ import annotations  # Allow forward references in type hints
 
 import logging
 from pathlib import Path
-from typing import List
+from typing import List, Sequence
 
 import cv2
 import numpy as np
@@ -13,11 +13,11 @@ from utils.types import Detection
 # Set up module-level logger
 LOGGER = logging.getLogger("vending_pipeline.detector")
 
-# Try to import YOLO from Ultralytics; if missing, set YOLO to None
+# Try to import RTDETR from Ultralytics; if missing, set RTDETR to None
 try:
-    from ultralytics import YOLO
+    from ultralytics import RTDETR
 except Exception:  
-    YOLO = None
+    RTDETR = None
 
 
 def crop_histogram_embedding(frame: np.ndarray, bbox: tuple[float, float, float, float]) -> np.ndarray:
@@ -54,7 +54,7 @@ def crop_histogram_embedding(frame: np.ndarray, bbox: tuple[float, float, float,
 
 
 class RTDETRDetector:
-    """Object detector using an RT‑DETR model via Ultralytics YOLO interface."""
+    """Object detector using an RT‑DETR model via Ultralytics RTDETR interface."""
 
     def __init__(self, model_path: str, device: str = "cpu", conf_threshold: float = DETECTION_MODEL_CONFIDENCE) -> None:
         """
@@ -72,13 +72,107 @@ class RTDETRDetector:
 
         path = Path(model_path)
         # Load model only if Ultralytics is available and the file exists
-        if YOLO is not None and path.exists():
-            self.model = YOLO(str(path))
+        if RTDETR is not None and path.exists():
+            self.model = RTDETR(str(path))
             LOGGER.info("Loaded RT-DETR model from %s with confidence threshold %.2f", path, self.conf_threshold)
         else:
             LOGGER.warning(
                 "RT-DETR model unavailable. The pipeline will run with empty detections until a model is provided."
             )
+
+    def _parse_result(
+        self,
+        result,
+        *,
+        frame: np.ndarray,
+        camera_id: int,
+        frame_index: int,
+        timestamp_ms: float,
+    ) -> List[Detection]:
+        """Convert one Ultralytics result object into Detection records."""
+        detections: List[Detection] = []
+        names = getattr(result, "names", {}) or {}
+        boxes = getattr(result, "boxes", None)
+        if boxes is None:
+            return detections
+
+        xyxy = boxes.xyxy.cpu().numpy()
+        cls = boxes.cls.cpu().numpy().astype(int)
+        conf = boxes.conf.cpu().numpy()
+
+        for bbox, class_id, confidence in zip(xyxy, cls, conf):
+            bbox_tuple = tuple(float(v) for v in bbox)
+            class_name = names.get(int(class_id), str(class_id))
+            centroid = np.array(
+                [(bbox_tuple[0] + bbox_tuple[2]) / 2.0, (bbox_tuple[1] + bbox_tuple[3]) / 2.0],
+                dtype=np.float32,
+            )
+            detections.append(
+                Detection(
+                    bbox=bbox_tuple,
+                    class_id=int(class_id),
+                    class_name=class_name,
+                    confidence=float(confidence),
+                    embedding=crop_histogram_embedding(frame, bbox_tuple),
+                    camera_id=camera_id,
+                    frame_index=frame_index,
+                    timestamp_ms=timestamp_ms,
+                    original_centroid=centroid,
+                )
+            )
+        return detections
+
+    def detect_batch(
+        self,
+        frames: Sequence[np.ndarray],
+        *,
+        camera_ids: Sequence[int],
+        frame_indices: Sequence[int],
+        timestamp_ms_list: Sequence[float],
+    ) -> List[List[Detection]]:
+        """
+        Run detector inference over multiple frames while preserving input order.
+        """
+        if not frames:
+            return []
+        if not (len(frames) == len(camera_ids) == len(frame_indices) == len(timestamp_ms_list)):
+            raise ValueError("Batched detection metadata must have the same length as frames.")
+        if self.model is None:
+            return [[] for _ in frames]
+
+        results = list(self.model.predict(
+            list(frames),
+            verbose=False,
+            device=self.device,
+            conf=self.conf_threshold,
+            batch=len(frames),
+        ))
+        if len(results) != len(frames):
+            LOGGER.warning(
+                "Detector returned %d result groups for %d frames; unmatched frames will be empty.",
+                len(results),
+                len(frames),
+            )
+
+        grouped = [
+            self._parse_result(
+                result,
+                frame=frame,
+                camera_id=camera_id,
+                frame_index=frame_index,
+                timestamp_ms=timestamp_ms,
+            )
+            for frame, result, camera_id, frame_index, timestamp_ms in zip(
+                frames,
+                results,
+                camera_ids,
+                frame_indices,
+                timestamp_ms_list,
+            )
+        ]
+        if len(grouped) < len(frames):
+            grouped.extend([[] for _ in range(len(frames) - len(grouped))])
+        return grouped
 
     def detect(
         self,
@@ -100,50 +194,9 @@ class RTDETRDetector:
         Returns:
             List of Detection objects (may be empty if no model or no detections).
         """
-        if self.model is None:
-            return []  # No model loaded → no detections
-
-        # Run inference; verbose=False suppresses extra output
-        results = self.model.predict(frame, verbose=False, device=self.device, conf=self.conf_threshold)
-
-        detections: List[Detection] = []
-
-        for result in results:
-            # Get class name mapping (e.g., {0: "person", 1: "bottle"})
-            names = getattr(result, "names", {}) or {}
-            boxes = getattr(result, "boxes", None)
-            if boxes is None:
-                continue  # No bounding boxes in this result
-
-            # Extract detection data as numpy arrays (move from GPU if needed)
-            xyxy = boxes.xyxy.cpu().numpy()          # shape (N,4)
-            cls = boxes.cls.cpu().numpy().astype(int)  # shape (N,)
-            conf = boxes.conf.cpu().numpy()            # shape (N,)
-
-            # Iterate over each detection
-            for bbox, class_id, confidence in zip(xyxy, cls, conf):
-                bbox_tuple = tuple(float(v) for v in bbox)  # (x1,y1,x2,y2)
-                class_name = names.get(int(class_id), str(class_id))
-
-                # Compute centroid from the bounding box
-                centroid = np.array(
-                    [(bbox_tuple[0] + bbox_tuple[2]) / 2.0, (bbox_tuple[1] + bbox_tuple[3]) / 2.0],
-                    dtype=np.float32,
-                )
-
-                # Create a Detection object with all required fields
-                detections.append(
-                    Detection(
-                        bbox=bbox_tuple,
-                        class_id=int(class_id),
-                        class_name=class_name,
-                        confidence=float(confidence),
-                        embedding=crop_histogram_embedding(frame, bbox_tuple),
-                        camera_id=camera_id,
-                        frame_index=frame_index,
-                        timestamp_ms=timestamp_ms,
-                        original_centroid=centroid,
-                    )
-                )
-
-        return detections
+        return self.detect_batch(
+            [frame],
+            camera_ids=[camera_id],
+            frame_indices=[frame_index],
+            timestamp_ms_list=[timestamp_ms],
+        )[0]

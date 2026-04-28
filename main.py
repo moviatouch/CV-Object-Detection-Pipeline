@@ -16,6 +16,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import (
+    DETECTION_BATCH_SIZE,
     DETECTION_MODEL_CONFIDENCE,
     DETECTION_DEBUG_LOG_INTERVAL,
     DETECTION_FUSION_IOU,
@@ -221,6 +222,94 @@ def _overall_total_frames(reader: SynchronizedVideoReader) -> int:
     return min(valid_totals) if valid_totals else 0
 
 
+def _next_bundle_batch(reader: SynchronizedVideoReader, batch_size: int) -> List[dict]:
+    """Read up to batch_size synchronized frame-pairs, stopping before any incomplete pair."""
+    bundles: List[dict] = []
+    while len(bundles) < batch_size:
+        bundle = reader.next()
+        if bundle is None or len(bundle["packets"]) < 2:
+            break
+        bundles.append(bundle)
+    return bundles
+
+
+def _iter_detection_ready_bundles(
+    reader: SynchronizedVideoReader,
+    detector: RTDETRDetector,
+    *,
+    batch_size: int,
+    include_original_view: bool,
+):
+    """
+    Prefetch a small frame batch, run detector inference once per view, then yield
+    bundles back in original order so downstream tracking and events stay unchanged.
+    """
+    while True:
+        bundles = _next_bundle_batch(reader, batch_size)
+        if not bundles:
+            return
+
+        warped_frames: List[np.ndarray] = []
+        warped_camera_ids: List[int] = []
+        warped_frame_indices: List[int] = []
+        warped_timestamps: List[float] = []
+        warped_keys: List[tuple[int, int]] = []
+
+        original_frames: List[np.ndarray] = []
+        original_camera_ids: List[int] = []
+        original_frame_indices: List[int] = []
+        original_timestamps: List[float] = []
+        original_keys: List[tuple[int, int]] = []
+
+        for batch_index, bundle in enumerate(bundles):
+            for camera_id, packet in bundle["packets"].items():
+                warped_frames.append(packet.warped_frame)
+                warped_camera_ids.append(camera_id)
+                warped_frame_indices.append(packet.frame_index)
+                warped_timestamps.append(packet.timestamp_ms)
+                warped_keys.append((batch_index, camera_id))
+
+                if include_original_view:
+                    original_frames.append(packet.frame)
+                    original_camera_ids.append(camera_id)
+                    original_frame_indices.append(packet.frame_index)
+                    original_timestamps.append(packet.timestamp_ms)
+                    original_keys.append((batch_index, camera_id))
+
+        warped_results = detector.detect_batch(
+            warped_frames,
+            camera_ids=warped_camera_ids,
+            frame_indices=warped_frame_indices,
+            timestamp_ms_list=warped_timestamps,
+        )
+        warped_lookup = {
+            key: detections for key, detections in zip(warped_keys, warped_results)
+        }
+
+        original_lookup: Dict[tuple[int, int], List[Detection]] = {}
+        if include_original_view and original_frames:
+            original_results = detector.detect_batch(
+                original_frames,
+                camera_ids=original_camera_ids,
+                frame_indices=original_frame_indices,
+                timestamp_ms_list=original_timestamps,
+            )
+            original_lookup = {
+                key: detections for key, detections in zip(original_keys, original_results)
+            }
+
+        for batch_index, bundle in enumerate(bundles):
+            bundle["warped_detections"] = {
+                camera_id: list(warped_lookup.get((batch_index, camera_id), []))
+                for camera_id in bundle["packets"].keys()
+            }
+            bundle["original_detections"] = {
+                camera_id: list(original_lookup.get((batch_index, camera_id), []))
+                for camera_id in bundle["packets"].keys()
+            }
+            yield bundle
+
+
 def _net_inventory_by_product(event_manager: EventManager) -> Dict[str, int]:
     """Compute net inventory deltas per product."""
     products = set(event_manager.pickup_count) | set(event_manager.putback_count)
@@ -320,6 +409,7 @@ def run_pipeline(
     reader = SynchronizedVideoReader(video0, video1, roi0, roi1)
     total_frames = _overall_total_frames(reader)
     callback_every_n_frames = max(1, int(callback_every_n_frames))
+    det_batch_size = max(1, int(DETECTION_BATCH_SIZE))
     frames_processed = 0
     completed = True
 
@@ -352,12 +442,18 @@ def run_pipeline(
         if show_preview:
             cv2.namedWindow(PREVIEW_WINDOW_NAME, cv2.WINDOW_NORMAL)
 
-        while True:
-            metrics_tracker.start_frame()
+        bundle_iterator = _iter_detection_ready_bundles(
+            reader,
+            detector,
+            batch_size=det_batch_size,
+            include_original_view=ENABLE_ORIGINAL_VIEW_FUSION,
+        )
 
-            bundle = reader.next()
-            if bundle is None or len(bundle["packets"]) < 2:
+        while True:
+            bundle = next(bundle_iterator, None)
+            if bundle is None:
                 break
+            metrics_tracker.start_frame()
             packets = bundle["packets"]
             sync_ok = bundle["sync_ok"]
             frames_processed += 1
@@ -374,24 +470,14 @@ def run_pipeline(
             per_camera_original_detections: Dict[int, List[Detection]] = {}
 
             for camera_id, packet in packets.items():
-                warped_detections = detector.detect(
-                    packet.warped_frame,
-                    camera_id=camera_id,
-                    frame_index=packet.frame_index,
-                    timestamp_ms=packet.timestamp_ms,
-                )
+                warped_detections = list(bundle["warped_detections"].get(camera_id, []))
                 inverse_warp = np.linalg.inv(packet.warp_matrix)
                 for detection in warped_detections:
                     detection.original_centroid = transform_point(inverse_warp, detection.centroid)
 
                 original_projected: List[Detection] = []
                 if ENABLE_ORIGINAL_VIEW_FUSION:
-                    original_detections = detector.detect(
-                        packet.frame,
-                        camera_id=camera_id,
-                        frame_index=packet.frame_index,
-                        timestamp_ms=packet.timestamp_ms,
-                    )
+                    original_detections = bundle["original_detections"].get(camera_id, [])
                     roi_polygon = np.asarray((roi0 if camera_id == 0 else roi1)["points"], dtype=np.float32)
                     safe_polygon = np.asarray((roi0 if camera_id == 0 else roi1)["safe_polygon"], dtype=np.float32)
                     for detection in original_detections:

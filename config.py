@@ -31,8 +31,8 @@ ROI_MARGIN_PX = 10
 # -----------------------------------------------------------------------------
 # Motion analysis
 # -----------------------------------------------------------------------------
-MIN_PICKUP_DISPLACEMENT = 10             # Minimum displacement (pixels) to classify as pickup
-MIN_PUTBACK_DISPLACEMENT = 10            # Minimum displacement to classify as putback
+MIN_PICKUP_DISPLACEMENT = 12             # Minimum displacement (pixels) to classify as pickup
+MIN_PUTBACK_DISPLACEMENT = 12            # Minimum displacement to classify as putback
 DEADBAND = 5                             # Ignore movements smaller than this (jitter)
 MOTION_BUFFER_SIZE = 10                  # History size for motion smoothing
 
@@ -91,8 +91,9 @@ SHOW_PREVIEW = True                      # Display live preview window
 PREVIEW_WINDOW_NAME = "Vending Pipeline Preview"
 PREVIEW_SCALE = 0.6                      # Scale factor for preview window
 DETECTION_MODEL_CONFIDENCE = 0.80        # Confidence threshold for detector (YOLO/RT‑DETR)
+DETECTION_BATCH_SIZE = 30                 # Number of synchronized frame-pairs to batch for detector inference
 ENABLE_ORIGINAL_VIEW_FUSION = True       # Combine detections from original and warped views
-ORIGINAL_VIEW_ROI_PAD_PX = 400           # Padding around ROI when fusing original view detections
+ORIGINAL_VIEW_ROI_PAD_PX = 300           # Padding around ROI when fusing original view detections
 DETECTION_FUSION_IOU = 0.5               # IoU threshold for fusing duplicate detections
 DETECTION_DEBUG_LOG_INTERVAL = 10        # Log detection summary every N frames
 TRACK_CONFIDENCE_HISTORY = 10            # Length of confidence history per track
