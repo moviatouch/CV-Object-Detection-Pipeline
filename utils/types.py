@@ -1,11 +1,226 @@
-from __future__ import annotations  # Allow forward references in type hints
+# from __future__ import annotations
+
+# from collections import deque
+# from dataclasses import dataclass, field
+# from typing import Deque, Dict, List, Optional, Tuple
+
+# import numpy as np
+
+# # Type aliases for readability
+# BBox = Tuple[float, float, float, float]   # (x1, y1, x2, y2)
+# Point = Tuple[float, float]                # (x, y)
+
+
+# @dataclass
+# class Detection:
+#     """
+#     Raw detection from an object detector (YOLO/RT-DETR).
+
+#     Contains bounding box, class, confidence, histogram embedding, and metadata.
+#     """
+#     bbox: BBox
+#     class_id: int
+#     class_name: str
+#     confidence: float
+#     embedding: np.ndarray                    # 96-dim histogram embedding
+#     camera_id: int
+#     frame_index: int
+#     timestamp_ms: float
+#     source_view: str = "warped"              # "warped" (after homography) or "original"
+#     original_centroid: Optional[np.ndarray] = None
+#     display_bbox: Optional[BBox] = None
+#     in_safe_roi_override: Optional[bool] = None
+#     in_outer_roi_override: Optional[bool] = None
+
+#     @property
+#     def centroid(self) -> np.ndarray:
+#         """Compute centroid from bounding box."""
+#         x1, y1, x2, y2 = self.bbox
+#         return np.array([(x1 + x2) / 2.0, (y1 + y2) / 2.0], dtype=np.float32)
+
+
+# @dataclass
+# class TrackObservation:
+#     """
+#     Output from a single-camera tracker (SingleCameraTracker).
+
+#     Represents a tracked object in one camera after matching/filtering.
+#     """
+#     camera_id: int
+#     local_track_id: int
+#     frame_index: int
+#     timestamp_ms: float
+#     class_id: int
+#     class_name: str
+#     bbox: BBox
+#     centroid: np.ndarray
+#     confidence: float
+#     embedding: np.ndarray
+#     velocity: np.ndarray
+#     motion_centroid: np.ndarray
+#     in_safe_roi: bool
+#     in_outer_roi: bool
+#     display_bbox: Optional[BBox] = None
+#     temporal_iou: float = 1.0
+
+
+# @dataclass
+# class TrackUpdate:
+#     """
+#     A single frame's update to a global track, after motion analysis (EventManager).
+
+#     Contains all information needed by the event state machine.
+#     """
+#     global_id: int
+#     class_id: int
+#     class_name: str
+#     camera_id: int
+#     frame_index: int
+#     timestamp_ms: float
+#     bbox: BBox
+#     centroid: np.ndarray
+#     motion_centroid: np.ndarray
+#     confidence: float
+#     in_safe_roi: bool
+#     in_outer_roi: bool
+#     outward_motion: bool
+#     inward_motion: bool
+#     displacement_vector: np.ndarray
+#     displacement_magnitude: float
+#     motion_dot: float
+#     nearest_edge_index: int
+#     edge_normal: np.ndarray
+#     merged_suppressed: bool = False
+
+
+# @dataclass
+# class GlobalTrack:
+#     """
+#     Persistent long-term track across cameras and time.
+
+#     Maintains history, state machine variables (event_state, lifecycle_state),
+#     merge locking info, and all data needed by the EventManager.
+#     """
+#     global_id: int
+#     class_id: int
+#     class_name: str
+#     created_ms: float
+#     last_seen_ms: float
+#     event_state: str = "INSIDE"
+#     lifecycle_state: str = "ACTIVE"
+#     inside_counter: int = 0
+#     confirmation_confidences: Deque[float] = field(default_factory=lambda: deque(maxlen=10))
+#     centroid_history: Deque[np.ndarray] = field(default_factory=lambda: deque(maxlen=10))
+#     motion_centroid_history: Deque[np.ndarray] = field(default_factory=lambda: deque(maxlen=10))
+#     velocity_history: Deque[np.ndarray] = field(default_factory=lambda: deque(maxlen=10))
+#     embedding_bank: Deque[np.ndarray] = field(default_factory=lambda: deque(maxlen=5))
+#     bbox_by_camera: Dict[int, BBox] = field(default_factory=dict)
+#     source_local_ids: Dict[int, int] = field(default_factory=dict)
+#     last_frame_by_camera: Dict[int, int] = field(default_factory=dict)
+#     current_update: Optional[TrackUpdate] = None
+#     last_confidence: float = 0.0
+#     confidence_history: Deque[float] = field(default_factory=lambda: deque(maxlen=10))
+#     last_camera_id: Optional[int] = None
+#     last_frame_index: int = -1
+#     missing_since_ms: Optional[float] = None
+#     lost_reserved_since_ms: Optional[float] = None
+#     deleted: bool = False
+#     last_event_ms: float = -1.0
+#     pending_since_ms: Optional[float] = None
+#     last_seen_in_safe_roi: Optional[bool] = None
+#     last_seen_in_outer_roi: Optional[bool] = None
+#     last_debug_reason: str = ""
+#     boundary_linger_start_ms: Optional[float] = None
+#     boundary_linger_flagged: bool = False
+#     merge_counter: int = 0
+#     merge_locked: bool = False
+#     merge_owner_id: Optional[int] = None
+#     overlap_history: Dict[int, int] = field(default_factory=dict)
+#     centroid_history_by_camera: Dict[int, Deque[np.ndarray]] = field(default_factory=dict)
+#     motion_history_by_camera: Dict[int, Deque[np.ndarray]] = field(default_factory=dict)
+#     motion_direction_history: Deque[Optional[bool]] = field(
+#         default_factory=lambda: deque(maxlen=5)
+#     )
+#     # True once this track has received a neighbour-stability boost
+#     # from _check_neighbor_stability_boost.  Declared as a proper dataclass field
+#     # so it initialises correctly on every new track and is safe when the class
+#     # uses __slots__.  Replaces the former dynamic runtime attribute
+#     # (_stability_boosted) that was set directly on the instance.
+#     stability_boosted: bool = False
+#     was_stable: bool = False
+#     long_hold_pending: bool = False
+#     pickup_confirmed_ms: Optional[float] = None
+#     last_putback_confirmed_ms: Optional[float] = None   # NEW — for FM-6 cooldown
+#     stability_boosted: bool = False
+
+#     def mean_embedding(self) -> Optional[np.ndarray]:
+#         """Average of all embeddings in the embedding bank."""
+#         if not self.embedding_bank:
+#             return None
+#         return np.mean(np.stack(list(self.embedding_bank)), axis=0)
+
+#     def last_velocity(self) -> np.ndarray:
+#         """Most recent velocity vector (zero if no history)."""
+#         if not self.velocity_history:
+#             return np.zeros(2, dtype=np.float32)
+#         return np.array(self.velocity_history[-1], dtype=np.float32)
+
+#     def latest_bbox(self, camera_id: Optional[int] = None) -> Optional[BBox]:
+#         """
+#         Return the most recent bounding box for a specific camera,
+#         or the most recent overall if camera_id is None.
+#         """
+#         if camera_id is not None and camera_id in self.bbox_by_camera:
+#             return self.bbox_by_camera[camera_id]
+#         if not self.bbox_by_camera:
+#             return None
+#         latest_cam = next(reversed(self.bbox_by_camera))
+#         return self.bbox_by_camera[latest_cam]
+
+
+# @dataclass
+# class FramePacket:
+#     """
+#     Bundles all data associated with a single frame from one camera.
+#     """
+#     camera_id: int
+#     frame_index: int
+#     timestamp_ms: float
+#     frame: np.ndarray
+#     warped_frame: np.ndarray
+#     warped_display_frame: np.ndarray
+#     warp_matrix: np.ndarray
+#     full_roi_polygon: np.ndarray
+#     safe_roi_polygon: np.ndarray
+
+
+# @dataclass
+# class SessionSummary:
+#     """
+#     Final summary of a processing session (e.g., one video or one run).
+
+#     Contains all events (pickups/putbacks), per-class counts, net changes, and warnings.
+#     """
+#     session_id: str
+#     events: List[dict] = field(default_factory=list)
+#     pickup_records: List[dict] = field(default_factory=list)
+#     putback_records: List[dict] = field(default_factory=list)
+#     pickup_count: Dict[str, int] = field(default_factory=dict)
+#     putback_count: Dict[str, int] = field(default_factory=dict)
+#     net_change: Dict[str, int] = field(default_factory=dict)
+#     total_pickups: int = 0
+#     total_putbacks: int = 0
+#     warnings: List[str] = field(default_factory=list)
+
+
+
+from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, List, Optional, Tuple
 
 import numpy as np
-
 
 # Type aliases for readability
 BBox = Tuple[float, float, float, float]   # (x1, y1, x2, y2)
@@ -15,7 +230,7 @@ Point = Tuple[float, float]                # (x, y)
 @dataclass
 class Detection:
     """
-    Raw detection from an object detector (YOLO/RT‑DETR).
+    Raw detection from an object detector (YOLO/RT-DETR).
 
     Contains bounding box, class, confidence, histogram embedding, and metadata.
     """
@@ -23,13 +238,14 @@ class Detection:
     class_id: int
     class_name: str
     confidence: float
-    embedding: np.ndarray                    # 96‑dim histogram embedding
+    embedding: np.ndarray                    # 96-dim histogram embedding
     camera_id: int
     frame_index: int
     timestamp_ms: float
     source_view: str = "warped"              # "warped" (after homography) or "original"
-    original_centroid: Optional[np.ndarray] = None   # Centroid in original (unwarped) view
-    in_safe_roi_override: Optional[bool] = None      # Manual override for ROI membership
+    original_centroid: Optional[np.ndarray] = None
+    display_bbox: Optional[BBox] = None
+    in_safe_roi_override: Optional[bool] = None
     in_outer_roi_override: Optional[bool] = None
 
     @property
@@ -42,26 +258,28 @@ class Detection:
 @dataclass
 class TrackObservation:
     """
-    Output from a single‑camera tracker (SingleCameraTracker).
+    Output from a single-camera tracker (SingleCameraTracker).
 
     Represents a tracked object in one camera after matching/filtering.
     """
     camera_id: int
-    local_track_id: int                     # Unique ID within this camera
+    local_track_id: int
     frame_index: int
     timestamp_ms: float
     class_id: int
     class_name: str
     bbox: BBox
-    centroid: np.ndarray                    # Current centroid
+    centroid: np.ndarray
     confidence: float
-    embedding: np.ndarray                   # Latest embedding
-    velocity: np.ndarray                    # Displacement from previous centroid
-    motion_centroid: np.ndarray             # Centroid after motion compensation (more stable)
-    in_safe_roi: bool                       # Inside the safe inner ROI?
-    in_outer_roi: bool                      # Inside the full outer ROI?
-    shaky: bool = False                     # Was the frame globally shaky?
-    temporal_iou: float = 1.0               # IoU between consecutive bboxes
+    embedding: np.ndarray
+    velocity: np.ndarray
+    motion_centroid: np.ndarray
+    in_safe_roi: bool
+    in_outer_roi: bool
+    in_stable_roi: bool
+    safe_roi_distance: float
+    display_bbox: Optional[BBox] = None
+    temporal_iou: float = 1.0
 
 
 @dataclass
@@ -83,21 +301,22 @@ class TrackUpdate:
     confidence: float
     in_safe_roi: bool
     in_outer_roi: bool
-    outward_motion: bool                    # Moving away from ROI (pickup)
-    inward_motion: bool                     # Moving toward ROI (putback)
-    displacement_vector: np.ndarray         # (dx, dy) over the temporal gap
-    displacement_magnitude: float           # Euclidean norm
-    motion_dot: float                       # Dot product used for direction decision
-    nearest_edge_index: int                 # Which edge of the ROI is closest
-    edge_normal: np.ndarray                 # Outward normal of that edge
-    shaky: bool = False
-    merged_suppressed: bool = False         # Set if this update was suppressed due to merge lock
+    in_stable_roi: bool
+    safe_roi_distance: float
+    outward_motion: bool
+    inward_motion: bool
+    displacement_vector: np.ndarray
+    displacement_magnitude: float
+    motion_dot: float
+    nearest_edge_index: int
+    edge_normal: np.ndarray
+    merged_suppressed: bool = False
 
 
 @dataclass
 class GlobalTrack:
     """
-    Persistent long‑term track across cameras and time.
+    Persistent long-term track across cameras and time.
 
     Maintains history, state machine variables (event_state, lifecycle_state),
     merge locking info, and all data needed by the EventManager.
@@ -105,41 +324,78 @@ class GlobalTrack:
     global_id: int
     class_id: int
     class_name: str
-    created_ms: float                       # First appearance timestamp
-    last_seen_ms: float                     # Most recent observation timestamp
-    event_state: str = "INSIDE"             # INSIDE / STABLE_INSIDE / PICKUP_PENDING / PICKED_UP / PUTBACK_PENDING
-    lifecycle_state: str = "ACTIVE"         # ACTIVE / LOST / LOST_RESERVED
-    inside_counter: int = 0                 # Consecutive stable‑inside frames
+    created_ms: float
+    last_seen_ms: float
+    event_state: str = "INSIDE"
+    lifecycle_state: str = "ACTIVE"
+    inside_counter: int = 0
     confirmation_confidences: Deque[float] = field(default_factory=lambda: deque(maxlen=10))
     centroid_history: Deque[np.ndarray] = field(default_factory=lambda: deque(maxlen=10))
     motion_centroid_history: Deque[np.ndarray] = field(default_factory=lambda: deque(maxlen=10))
     velocity_history: Deque[np.ndarray] = field(default_factory=lambda: deque(maxlen=10))
     embedding_bank: Deque[np.ndarray] = field(default_factory=lambda: deque(maxlen=5))
-    bbox_by_camera: Dict[int, BBox] = field(default_factory=dict)          # Latest bbox per camera
-    source_local_ids: Dict[int, int] = field(default_factory=dict)         # (camera_id → local_track_id)
+    bbox_by_camera: Dict[int, BBox] = field(default_factory=dict)
+    source_local_ids: Dict[int, int] = field(default_factory=dict)
     last_frame_by_camera: Dict[int, int] = field(default_factory=dict)
-    current_update: Optional[TrackUpdate] = None                           # Most recent update
+    current_update: Optional[TrackUpdate] = None
     last_confidence: float = 0.0
     confidence_history: Deque[float] = field(default_factory=lambda: deque(maxlen=10))
     last_camera_id: Optional[int] = None
     last_frame_index: int = -1
-    missing_since_ms: Optional[float] = None                               # When object was last seen
-    lost_reserved_since_ms: Optional[float] = None                         # When entered LOST_RESERVED
+    missing_since_ms: Optional[float] = None
+    lost_reserved_since_ms: Optional[float] = None
     deleted: bool = False
     last_event_ms: float = -1.0
-    pending_since_ms: Optional[float] = None                               # When PENDING state started
+    pending_since_ms: Optional[float] = None
     last_seen_in_safe_roi: Optional[bool] = None
     last_seen_in_outer_roi: Optional[bool] = None
+    last_seen_in_stable_roi: Optional[bool] = None
     last_debug_reason: str = ""
     boundary_linger_start_ms: Optional[float] = None
     boundary_linger_flagged: bool = False
     merge_counter: int = 0
-    merge_locked: bool = False                                              # Part of a merge group?
-    merge_owner_id: Optional[int] = None                                    # Which track owns the group
-    overlap_history: Dict[int, int] = field(default_factory=dict)           # Consecutive overlap frames per other track
+    merge_locked: bool = False
+    merge_owner_id: Optional[int] = None
+    overlap_history: Dict[int, int] = field(default_factory=dict)
+    centroid_history_by_camera: Dict[int, Deque[np.ndarray]] = field(default_factory=dict)
     motion_history_by_camera: Dict[int, Deque[np.ndarray]] = field(default_factory=dict)
-    motion_direction_history: Deque[Optional[bool]] = field(default_factory=lambda: deque(maxlen=5))
+    motion_direction_history: Deque[Optional[bool]] = field(
+        default_factory=lambda: deque(maxlen=5)
+    )
     # True = outward, False = inward, None = stationary/ambiguous
+
+    # counts how many times the PICKUP_PENDING timeout has been
+    # extended for this track due to product hesitation in the OUTER ROI.
+    # Reset to 0 whenever the track leaves a PENDING state.
+    hesitation_resets: int = 0
+
+    # True once the track has reached STABLE_INSIDE at least once.
+    # Used to distinguish occlusion-during-pickup (confirm) from a track that
+    # never stabilised (cancel silently).  Never reset after being set.
+    was_stable: bool = False
+
+    # True while this track is in the long-hold putback fallback
+    # path (elapsed time > CLASS_RETURN_MAX_GAP_MS).  Cleared on any non-pending
+    # transition.
+    long_hold_pending: bool = False
+
+    # DEDUPLICATION: True once this track has confirmed ONE pickup event.
+    # Prevents the same track from entering PICKUP_PENDING multiple times,
+    # which was causing duplicate pickup events for a single physical action.
+    # pickup_confirmed: bool = False
+
+    #timestamp (ms) at which this track's pickup was confirmed.
+    # Stamped by _record_pickup so PICKED_UP state can compute per-track elapsed
+    # time instead of reading the shared class-level deque (which may belong to
+    # a different track of the same product class).
+    pickup_confirmed_ms: Optional[float] = None
+
+    # Timestamp of the latest confirmed putback. Used to suppress immediate
+    # same-track pickup echoes caused by small post-return detector shifts.
+    last_putback_confirmed_ms: Optional[float] = None
+
+    # True once this track has received a neighbour-stability boost.
+    stability_boosted: bool = False
 
     def mean_embedding(self) -> Optional[np.ndarray]:
         """Average of all embeddings in the embedding bank."""
@@ -170,23 +426,16 @@ class GlobalTrack:
 class FramePacket:
     """
     Bundles all data associated with a single frame from one camera.
-
-    Used to pass information between pipeline stages (preprocessing, detection,
-    tracking, event management).
     """
     camera_id: int
     frame_index: int
     timestamp_ms: float
-    frame: np.ndarray                       # Original BGR frame
-    gray: np.ndarray                        # Grayscale version
-    enhanced_frame: np.ndarray              # Enhanced (CLAHE etc.) for detection
-    warped_frame: np.ndarray                # Perspective‑warped version (top‑down view)
-    warped_display_frame: np.ndarray        # Warped frame for visualisation
-    warped_gray: np.ndarray                 # Grayscale of warped frame
-    warp_matrix: np.ndarray                 # Homography matrix from original to warped
-    shaky: bool                             # Global camera shake flag
-    full_roi_polygon: np.ndarray            # Outer ROI polygon in warped coordinates
-    safe_roi_polygon: np.ndarray            # Inner (shrunk) ROI polygon
+    frame: np.ndarray
+    warped_frame: np.ndarray
+    warped_display_frame: np.ndarray
+    warp_matrix: np.ndarray
+    full_roi_polygon: np.ndarray
+    safe_roi_polygon: np.ndarray
 
 
 @dataclass
@@ -194,13 +443,15 @@ class SessionSummary:
     """
     Final summary of a processing session (e.g., one video or one run).
 
-    Contains all events (pickups/putbacks), per‑class counts, net changes, and warnings.
+    Contains all events (pickups/putbacks), per-class counts, net changes, and warnings.
     """
     session_id: str
-    events: List[dict] = field(default_factory=list)           # All pickup+putback events
-    pickup_records: List[dict] = field(default_factory=list)   # Only pickup events
-    putback_records: List[dict] = field(default_factory=list)  # Only putback events
-    pickup_count: Dict[str, int] = field(default_factory=dict) # Class → number of pickups
-    putback_count: Dict[str, int] = field(default_factory=dict)# Class → number of putbacks
-    net_change: Dict[str, int] = field(default_factory=dict)   # pickup_count - putback_count
-    warnings: List[str] = field(default_factory=list)          # Non‑fatal issues (e.g., ignored putback)
+    events: List[dict] = field(default_factory=list)
+    pickup_records: List[dict] = field(default_factory=list)
+    putback_records: List[dict] = field(default_factory=list)
+    pickup_count: Dict[str, int] = field(default_factory=dict)
+    putback_count: Dict[str, int] = field(default_factory=dict)
+    net_change: Dict[str, int] = field(default_factory=dict)
+    total_pickups: int = 0
+    total_putbacks: int = 0
+    warnings: List[str] = field(default_factory=list)

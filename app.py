@@ -51,7 +51,7 @@ st.caption("Upload the top-left and top-right camera videos, then run the existi
 with st.sidebar:
     st.header("Run Settings")
     session_id = st.text_input("Session ID", value=_default_session_id())
-    device = st.text_input("Device", value="cpu")
+    device = st.text_input("Device", value="cuda")
     det_conf = st.slider(
         "Detection confidence",
         min_value=0.10,
@@ -116,10 +116,6 @@ if start_processing:
         metric_cols[4].metric("Sync", "OK" if status.sync_ok else "Frozen")
 
         status_bits = []
-        if status.low_light_mode:
-            status_bits.append("Low-light mode")
-        if status.events_paused:
-            status_bits.append("Events paused")
         if not status_bits:
             status_bits.append("Processing normally")
         status_placeholder.info(" | ".join(status_bits))

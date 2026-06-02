@@ -1,4 +1,4 @@
-from __future__ import annotations  # Allow forward references in type hints
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Sequence
@@ -6,54 +6,7 @@ from typing import Optional, Sequence
 import cv2
 import numpy as np
 
-from config import SHAKE_FLOW_THRESHOLD
-
-
-@dataclass
-class GlobalMotionEstimator:
-    """
-    Detects global camera shake between consecutive frames using dense optical flow.
-    """
-    threshold: float = SHAKE_FLOW_THRESHOLD  # Median flow magnitude that indicates shake
-
-    def is_shaky(self, prev_gray: np.ndarray | None, gray: np.ndarray) -> bool:
-        """
-        Return True if the current frame is shaky relative to the previous frame.
-
-        Args:
-            prev_gray: Previous grayscale frame (or None).
-            gray: Current grayscale frame.
-
-        Returns:
-            True if median flow magnitude > threshold, else False.
-        """
-        # No previous frame → cannot detect shake
-        if prev_gray is None:
-            return False
-
-        # Compute dense optical flow using Farneback method
-        flow = cv2.calcOpticalFlowFarneback(
-            prev_gray,
-            gray,
-            None,
-            pyr_scale=0.5,   # Downscale factor for pyramid
-            levels=3,         # Number of pyramid levels
-            winsize=15,       # Averaging window size
-            iterations=3,     # Iterations per level
-            poly_n=5,         # Polynomial expansion neighbourhood size
-            poly_sigma=1.2,   # Gaussian standard deviation for polynomial expansion
-            flags=0,          # Default flags
-        )
-
-        # Compute magnitude of each flow vector (dx, dy)
-        magnitude = np.linalg.norm(flow.reshape(-1, 2), axis=1)
-
-        # Empty frame → not shaky
-        if magnitude.size == 0:
-            return False
-
-        # Frame is shaky if median magnitude exceeds threshold
-        return float(np.median(magnitude)) > self.threshold
+# SHAKE_FLOW_THRESHOLD and GlobalMotionEstimator removed
 
 
 def propagate_bbox_lk(

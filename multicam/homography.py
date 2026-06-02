@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 
 from config import HOMOGRAPHY_MAX_ERROR
+from utils.roi_utils import ensure_polygon_clockwise
 
 
 def compute_homography(src_points: Sequence[Sequence[float]], dst_points: Sequence[Sequence[float]]) -> np.ndarray:
@@ -23,6 +24,8 @@ def compute_homography(src_points: Sequence[Sequence[float]], dst_points: Sequen
     Raises:
         RuntimeError: If homography computation fails (e.g., insufficient points).
     """
+    src_points = ensure_polygon_clockwise(src_points)
+    dst_points = ensure_polygon_clockwise(dst_points)
     # Convert to numpy arrays of shape (N,2) and compute homography
     matrix, _ = cv2.findHomography(
         np.asarray(src_points, dtype=np.float32),
@@ -106,12 +109,15 @@ class HomographyContext:
         Returns:
             HomographyContext with both matrices, error, and active flag.
         """
+        ordered_cam0 = ensure_polygon_clockwise(cam0_points)
+        ordered_cam1 = ensure_polygon_clockwise(cam1_points)
+
         # Compute forward and backward homographies
-        matrix_01 = compute_homography(cam0_points, cam1_points)
-        matrix_10 = compute_homography(cam1_points, cam0_points)
+        matrix_01 = compute_homography(ordered_cam0, ordered_cam1)
+        matrix_10 = compute_homography(ordered_cam1, ordered_cam0)
 
         # Compute reprojection error (using forward homography on the ROI points)
-        error = projection_error(matrix_01, cam0_points, cam1_points)
+        error = projection_error(matrix_01, ordered_cam0, ordered_cam1)
 
         # Mark as active only if error is within the allowed maximum
         active = error <= HOMOGRAPHY_MAX_ERROR

@@ -1,2 +1,1 @@
 """Single-camera tracking."""
-

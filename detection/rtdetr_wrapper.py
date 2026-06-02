@@ -6,6 +6,7 @@ from typing import List, Sequence
 
 import cv2
 import numpy as np
+import torch
 
 from config import DETECTION_MODEL_CONFIDENCE
 from utils.types import Detection
@@ -56,7 +57,7 @@ def crop_histogram_embedding(frame: np.ndarray, bbox: tuple[float, float, float,
 class RTDETRDetector:
     """Object detector using an RT‑DETR model via Ultralytics RTDETR interface."""
 
-    def __init__(self, model_path: str, device: str = "cpu", conf_threshold: float = DETECTION_MODEL_CONFIDENCE) -> None:
+    def __init__(self, model_path: str,  device: str | None = None, conf_threshold: float = DETECTION_MODEL_CONFIDENCE) -> None:
         """
         Initialize the detector.
 
@@ -66,7 +67,10 @@ class RTDETRDetector:
             conf_threshold: Minimum confidence score for detections.
         """
         self.model_path = model_path
-        self.device = device
+        if device is None:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device
         self.conf_threshold = conf_threshold
         self.model = None  # Will be set if model loads successfully
 

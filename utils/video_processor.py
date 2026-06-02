@@ -7,13 +7,7 @@ from typing import Dict, Optional
 import cv2
 import numpy as np
 
-from config import (
-    ANNOTATION_FPS_FALLBACK,
-    CLAHE_CLIP_LIMIT,
-    CLAHE_TILE_GRID,
-    DESYNC_TOLERANCE_FRAMES,
-)
-from motion.optical_flow import GlobalMotionEstimator
+from config import DESYNC_TOLERANCE_FRAMES  # Only sync tolerance remains
 from utils.roi_utils import as_np, warp_frame
 from utils.types import FramePacket
 
@@ -26,16 +20,15 @@ class CameraContext:
     video_path: str
     roi_payload: dict                # ROI definition (polygon, safe polygon, etc.)
     capture: cv2.VideoCapture
-    prev_gray: Optional[np.ndarray] = None
-    motion_estimator: GlobalMotionEstimator = field(default_factory=GlobalMotionEstimator)
+    # No prev_gray, no motion_estimator – shake detection removed
 
 
 class SynchronizedVideoReader:
     """
     Reads two video files in a synchronised manner.
 
-    For each frame, it reads the next frame from both cameras (if available),
-    preprocesses each frame (CLAHE, warping, shake detection), and returns
+    For each frame, it reads the next frame from both cameras,
+    warps each original frame to a top‑down view, and returns
     a pair of FramePacket objects together with a sync status.
     """
 
@@ -64,7 +57,7 @@ class SynchronizedVideoReader:
     def fps(self, camera_id: int) -> float:
         """Return the frames per second of the given camera's video."""
         fps = float(self.contexts[camera_id].capture.get(cv2.CAP_PROP_FPS))
-        return fps if fps > 0 else ANNOTATION_FPS_FALLBACK
+        return fps if fps > 0 else 30.0  # fallback
 
     def frame_size(self, camera_id: int) -> tuple[int, int]:
         """Return the (width, height) of the video for the given camera."""
@@ -84,27 +77,6 @@ class SynchronizedVideoReader:
         if position_ms > 0:
             return position_ms
         return (frame_index / fps) * 1000.0
-
-    def _preprocess(self, frame: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Apply CLAHE to the grayscale and colour versions of the frame.
-
-        Returns:
-            - enhanced grayscale (for optical flow)
-            - enhanced BGR (for detection)
-        """
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP_LIMIT, tileGridSize=CLAHE_TILE_GRID)
-        enhanced = clahe.apply(gray)                     # grayscale enhanced
-
-        # Enhance colour frame: convert to LAB, apply CLAHE only on L channel, then back to BGR
-        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-        l_channel, a_channel, b_channel = cv2.split(lab)
-        enhanced_l = clahe.apply(l_channel)
-        enhanced_lab = cv2.merge((enhanced_l, a_channel, b_channel))
-        enhanced_bgr = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
-
-        return enhanced, enhanced_bgr
 
     def _warp_polygon(self, polygon: np.ndarray, matrix: np.ndarray) -> np.ndarray:
         """
@@ -141,17 +113,11 @@ class SynchronizedVideoReader:
             fps = self.fps(camera_id)
             timestamp_ms = self._timestamp_ms(context.capture, frame_index, fps)
 
-            # Preprocess: enhanced grayscale and enhanced BGR
-            gray, enhanced_bgr = self._preprocess(frame)
-
-            # Detect global shake using optical flow between consecutive frames
-            shaky = context.motion_estimator.is_shaky(context.prev_gray, gray)
-            context.prev_gray = gray
-
-            # Warp the enhanced frame so that the ROI becomes a rectangle of size WARP_SIZE
-            warped_detection_frame, matrix = warp_frame(enhanced_bgr, context.roi_payload["points"])
+            # ----- Image processing: only perspective warp (no CLAHE, no grayscale for detection) -----
+            # Warp the original BGR frame to a top‑down view (used for detection)
+            warped_detection_frame, matrix = warp_frame(frame, context.roi_payload["points"])
+            # Warp the original frame also for display (same transform)
             warped_display_frame, _ = warp_frame(frame, context.roi_payload["points"])
-            warped_gray = cv2.cvtColor(warped_detection_frame, cv2.COLOR_BGR2GRAY)
 
             # In the warped coordinate system, the ROI becomes the whole image
             full_roi_polygon = np.array(
@@ -170,14 +136,10 @@ class SynchronizedVideoReader:
                 camera_id=camera_id,
                 frame_index=frame_index,
                 timestamp_ms=timestamp_ms,
-                frame=frame,
-                gray=gray,
-                enhanced_frame=enhanced_bgr,
-                warped_frame=warped_detection_frame,
-                warped_display_frame=warped_display_frame,
-                warped_gray=warped_gray,
+                frame=frame,                               # original BGR (for display/overlay)
+                warped_frame=warped_detection_frame,       # warped BGR → used for detection
+                warped_display_frame=warped_display_frame, # warped BGR for visualisation
                 warp_matrix=matrix,
-                shaky=shaky,
                 full_roi_polygon=full_roi_polygon,
                 safe_roi_polygon=safe_roi_polygon,
             )
