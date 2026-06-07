@@ -491,3 +491,78 @@ def draw_roi_diagnostic_frame(
         )
     
     return annotated
+
+def draw_cumulative_overlay(
+    frame: np.ndarray,
+    current_lines: List[str],
+    cumulative_lines: List[str],
+    origin: tuple[int, int] = None,
+    padding: int = 10,
+) -> np.ndarray:
+    """
+    Draw current video stats and cumulative stats overlay (top-right corner by default).
+    Automatically adjusts position to keep text inside frame.
+    """
+    annotated = frame.copy()
+    h, w = annotated.shape[:2]
+
+    font_scale = 0.55
+    thickness = 1
+    line_spacing = 22
+
+    # Build combined list with a separator
+    all_lines = []
+    if current_lines:
+        all_lines.extend(current_lines)
+        all_lines.append("")   # separator
+    all_lines.extend(cumulative_lines)
+
+    # Compute required box size
+    max_width = 0
+    for line in all_lines:
+        if line == "":
+            continue
+        (tw, _), _ = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+        max_width = max(max_width, tw)
+    box_w = max_width + 2 * padding
+    box_h = padding + len(all_lines) * line_spacing
+
+    # Determine origin (top-left of text block)
+    if origin is None:
+        # Default to top-right, but ensure it fits
+        x = w - box_w - padding
+        y = padding + 10
+    else:
+        x, y = origin
+
+    # Ensure box stays within frame
+    if x + box_w > w:
+        x = w - box_w - padding
+    if x < padding:
+        x = padding
+    if y + box_h > h:
+        y = h - box_h - padding
+    if y < padding:
+        y = padding
+
+    # Semi-transparent background
+    overlay = annotated.copy()
+    cv2.rectangle(overlay, (x - padding, y - 10), (x + box_w, y + box_h), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.6, annotated, 0.4, 0, annotated)
+
+    y_curr = y
+    for line in all_lines:
+        if line == "":
+            y_curr += line_spacing // 2
+            continue
+        cv2.putText(
+            annotated,
+            line,
+            (x, y_curr),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            font_scale,
+            (0, 255, 255),
+            thickness,
+        )
+        y_curr += line_spacing
+    return annotated

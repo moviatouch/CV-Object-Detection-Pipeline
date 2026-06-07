@@ -72,8 +72,8 @@ REVIVAL_ANGLE_THRESHOLD = 45             # Max velocity angle difference (degree
 HOMOGRAPHY_AVAILABLE = True              # Whether homography between cameras is used
 HOMOGRAPHY_THRESHOLD = 40                # Unused? (legacy)
 HOMOGRAPHY_MAX_ERROR = 50                # Max reprojection error (pixels) to consider homography active
-EMBEDDING_SIM_THRESHOLD = 0.6            # Min cosine similarity to consider a match
-BASE_BUFFER_MS = 200                     # Base time to keep pending observations (ms)
+EMBEDDING_SIM_THRESHOLD = 0.45            # Min cosine similarity to consider a match
+BASE_BUFFER_MS = 1000                     # Base time to keep pending observations (ms)
 VELOCITY_BUFFER_FACTOR = 0.5             # Additional buffer = speed * factor (ms per pixel/frame)
 DESYNC_TOLERANCE_FRAMES = 2              # Allowed frame count difference between cameras
 
