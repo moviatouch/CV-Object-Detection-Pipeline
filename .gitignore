@@ -97,3 +97,8 @@ events_*.json
 # Video outputs
 output_*.mp4
 annotated_*.mp4
+*.jpg
+session*
+cumulative*
+
+test

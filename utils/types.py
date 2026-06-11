@@ -218,7 +218,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -313,6 +313,7 @@ class TrackUpdate:
     merged_suppressed: bool = False
 
 
+
 @dataclass
 class GlobalTrack:
     """
@@ -330,6 +331,35 @@ class GlobalTrack:
     lifecycle_state: str = "ACTIVE"
     inside_counter: int = 0
     confirmation_confidences: Deque[float] = field(default_factory=lambda: deque(maxlen=10))
+    # -------------------------------------------------------------------------
+    # Class identity locking / drift protection
+    # -------------------------------------------------------------------------
+    # Temporal class vote history. Each item is a dict:
+    # {
+    #   "class": str,
+    #   "confidence": float,
+    #   "timestamp_ms": float,
+    #   "roi_weight": float,
+    #   "in_stable_roi": bool,
+    #   "in_safe_roi": bool,
+    #   "in_outer_roi": bool,
+    # }
+    class_votes: Deque[dict] = field(default_factory=lambda: deque(maxlen=30))
+
+    # Class votes specifically collected during pickup/putback confirmation.
+    confirmation_class_votes: Deque[dict] = field(default_factory=lambda: deque(maxlen=10))
+
+    # Product identity locked after stable shelf observation.
+    locked_class_name: Optional[str] = None
+
+    # Final class used for billing/inventory event.
+    resolved_class_name: Optional[str] = None
+
+    # True when latest detected class differs from locked/resolved identity.
+    class_drift_flagged: bool = False
+
+    # Optional appearance embedding for later stronger ledger matching.
+    visual_embedding: Optional[Any] = None
     centroid_history: Deque[np.ndarray] = field(default_factory=lambda: deque(maxlen=10))
     motion_centroid_history: Deque[np.ndarray] = field(default_factory=lambda: deque(maxlen=10))
     velocity_history: Deque[np.ndarray] = field(default_factory=lambda: deque(maxlen=10))
@@ -397,6 +427,7 @@ class GlobalTrack:
     # True once this track has received a neighbour-stability boost.
     stability_boosted: bool = False
 
+
     def mean_embedding(self) -> Optional[np.ndarray]:
         """Average of all embeddings in the embedding bank."""
         if not self.embedding_bank:
@@ -455,3 +486,4 @@ class SessionSummary:
     total_pickups: int = 0
     total_putbacks: int = 0
     warnings: List[str] = field(default_factory=list)
+    pending_pickups: List[dict] = field(default_factory=list)

@@ -158,20 +158,29 @@ def _iter_detection_ready_bundles(
     batch_size: int,
 ) -> Generator[dict, None, None]:
     """
-    Read bundles, run detector on original frames, project detections to warped coordinates,
-    then yield bundles with projected detections.
+    Read bundles, run detector in batches, cache frames and detections,
+    project detections to warped coordinates, then yield bundles.
     """
     while True:
         bundles = _next_bundle_batch(reader, batch_size)
         if not bundles:
             return
 
-        # Collect original frames and metadata
+        # ==========================================================
+        # CACHES
+        # ==========================================================
+        frame_cache: Dict[Tuple[int, int], object] = {}
+        detection_cache: Dict[Tuple[int, int], List[Detection]] = {}
+
+        # ==========================================================
+        # DETECTOR INPUT COLLECTION
+        # ==========================================================
         original_frames: List[np.ndarray] = []
         camera_ids: List[int] = []
         frame_indices: List[int] = []
         timestamps: List[float] = []
-        keys: List[Tuple[int, int]] = []          # (batch_idx, camera_id)
+        keys: List[Tuple[int, int]] = []
+
         warp_matrices: Dict[Tuple[int, int], np.ndarray] = {}
         frame_shapes: Dict[Tuple[int, int], Tuple[int, int]] = {}
         warped_safe_roi_polygons: Dict[Tuple[int, int], np.ndarray] = {}
@@ -179,41 +188,86 @@ def _iter_detection_ready_bundles(
 
         for batch_idx, bundle in enumerate(bundles):
             for camera_id, packet in bundle["packets"].items():
-                original_frames.append(packet.frame)          # original BGR
+
+                key = (camera_id, packet.frame_index)
+
+                frame_cache[key] = packet
+
+                keys.append(key)
+
+                original_frames.append(packet.frame)
                 camera_ids.append(camera_id)
                 frame_indices.append(packet.frame_index)
                 timestamps.append(packet.timestamp_ms)
-                key = (batch_idx, camera_id)
-                keys.append(key)
+
                 warp_matrices[key] = packet.warp_matrix
-                frame_shapes[key] = (packet.warped_frame.shape[1], packet.warped_frame.shape[0])
+
+                frame_shapes[key] = (
+                    packet.warped_frame.shape[1],
+                    packet.warped_frame.shape[0],
+                )
+
                 warped_safe_roi_polygons[key] = packet.safe_roi_polygon
                 warped_full_roi_polygons[key] = packet.full_roi_polygon
 
-        # Run detector on original frames
-        original_results = detector.detect_batch(
+        # ==========================================================
+        # BATCH DETECTION
+        # ==========================================================
+        print(
+            f"[BATCH DETECTION] "
+            f"frames={len(original_frames)} "
+            f"bundles={len(bundles)}"
+        )
+        results = detector.detect_batch(
             original_frames,
             camera_ids=camera_ids,
             frame_indices=frame_indices,
             timestamp_ms_list=timestamps,
         )
 
-        # Project detections to warped coordinates
+        # ==========================================================
+        # STORE DETECTIONS IN CACHE
+        # ==========================================================
+        for key, detections in zip(keys, results):
+            detection_cache[key] = detections
+
+        # ==========================================================
+        # PROJECT DETECTIONS
+        # ==========================================================
         projected_by_key: Dict[Tuple[int, int], List[Detection]] = {}
-        for key, detections in zip(keys, original_results):
+
+        for key in keys:
+
+            detections = detection_cache.get(key, [])
+
             warped_dets = []
+
             for det in detections:
-                # Project bbox using homography
-                projected_bbox = project_bbox(warp_matrices[key], det.bbox)
+
+                projected_bbox = project_bbox(
+                    warp_matrices[key],
+                    det.bbox,
+                )
+
                 if projected_bbox is None:
                     continue
-                clipped = clip_bbox(projected_bbox, *frame_shapes[key])
+
+                clipped = clip_bbox(
+                    projected_bbox,
+                    *frame_shapes[key],
+                )
+
                 if clipped is None:
                     continue
+
                 projected_centroid = np.array(
-                    [(clipped[0] + clipped[2]) / 2.0, (clipped[1] + clipped[3]) / 2.0],
+                    [
+                        (clipped[0] + clipped[2]) / 2.0,
+                        (clipped[1] + clipped[3]) / 2.0,
+                    ],
                     dtype=np.float32,
                 )
+
                 warped_det = Detection(
                     bbox=clipped,
                     class_id=det.class_id,
@@ -226,20 +280,38 @@ def _iter_detection_ready_bundles(
                     source_view="original_projected",
                     original_centroid=det.centroid.copy(),
                     display_bbox=det.bbox,
-                    in_safe_roi_override=point_in_polygon(projected_centroid, warped_safe_roi_polygons[key]),
-                    in_outer_roi_override=point_in_polygon(projected_centroid, warped_full_roi_polygons[key]),
+                    in_safe_roi_override=point_in_polygon(
+                        projected_centroid,
+                        warped_safe_roi_polygons[key],
+                    ),
+                    in_outer_roi_override=point_in_polygon(
+                        projected_centroid,
+                        warped_full_roi_polygons[key],
+                    ),
                 )
+
                 warped_dets.append(warped_det)
+
             projected_by_key[key] = warped_dets
 
-        # Attach projected detections to each bundle
-        for batch_idx, bundle in enumerate(bundles):
-            bundle["detections"] = {
-                camera_id: list(projected_by_key.get((batch_idx, camera_id), []))
-                for camera_id in bundle["packets"].keys()
-            }
-            yield bundle
+        # ==========================================================
+        # ATTACH DETECTIONS BACK TO BUNDLES
+        # ==========================================================
+        for bundle in bundles:
 
+            detections_per_camera = {}
+
+            for camera_id, packet in bundle["packets"].items():
+
+                key = (camera_id, packet.frame_index)
+
+                detections_per_camera[camera_id] = (
+                    projected_by_key.get(key, [])
+                )
+
+            bundle["detections"] = detections_per_camera
+
+            yield bundle
 
 def _net_inventory_by_product(event_manager: EventManager) -> Dict[str, int]:
     products = set(event_manager.pickup_count) | set(event_manager.putback_count)
@@ -287,7 +359,6 @@ def _build_status(
         events=events,
         sync_ok=sync_ok,
     )
-
 
 def run_pipeline(
     video0: str,
