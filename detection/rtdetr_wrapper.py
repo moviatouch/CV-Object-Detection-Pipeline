@@ -14,11 +14,11 @@ from utils.types import Detection
 # Set up module-level logger
 LOGGER = logging.getLogger("vending_pipeline.detector")
 
-# Try to import RTDETR from Ultralytics; if missing, set RTDETR to None
+# Try to import YOLO from Ultralytics; if missing, set YOLO to None
 try:
-    from ultralytics import RTDETR
+    from ultralytics import YOLO
 except Exception:  
-    RTDETR = None
+    YOLO = None
 
 
 def crop_histogram_embedding(frame: np.ndarray, bbox: tuple[float, float, float, float]) -> np.ndarray:
@@ -54,8 +54,8 @@ def crop_histogram_embedding(frame: np.ndarray, bbox: tuple[float, float, float,
     return hist
 
 
-class RTDETRDetector:
-    """Object detector using an RT‑DETR model via Ultralytics RTDETR interface."""
+class YOLODetector:
+    """Object detector using an RT‑DETR model via Ultralytics YOLO interface."""
 
     def __init__(self, model_path: str,  device: str | None = None, conf_threshold: float = DETECTION_MODEL_CONFIDENCE) -> None:
         """
@@ -76,8 +76,8 @@ class RTDETRDetector:
 
         path = Path(model_path)
         # Load model only if Ultralytics is available and the file exists
-        if RTDETR is not None and path.exists():
-            self.model = RTDETR(str(path))
+        if YOLO is not None and path.exists():
+            self.model = YOLO(str(path))
             LOGGER.info("Loaded RT-DETR model from %s with confidence threshold %.2f", path, self.conf_threshold)
         else:
             LOGGER.warning(

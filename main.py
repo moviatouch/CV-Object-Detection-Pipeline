@@ -31,8 +31,10 @@ from config import (
     TRACK_STATUS_INTERVAL,
     WARP_SIZE,
 )
-from detection.rtdetr_wrapper import RTDETRDetector
-from detection.reid import ReIDModel
+from detection.rtdetr_wrapper import YOLODetector
+# from detection.reid import ReIDModel
+import torch
+from detection.reid import DINOv2ReID
 from event.event_manager import EventManager
 from motion.motion_analyzer import MotionAnalyzer
 from multicam.global_registry import GlobalRegistry
@@ -153,7 +155,7 @@ def _next_bundle_batch(reader: SynchronizedVideoReader, batch_size: int) -> List
 
 def _iter_detection_ready_bundles(
     reader: SynchronizedVideoReader,
-    detector: RTDETRDetector,
+    detector: YOLODetector,
     *,
     batch_size: int,
 ) -> Generator[dict, None, None]:
@@ -393,8 +395,9 @@ def run_pipeline(
     if not homography.active:
         logger.warning("Homography disabled (error %.2f px)", homography.error_px)
 
-    detector = RTDETRDetector(model_path, device=device, conf_threshold=det_conf)
-    reid = ReIDModel(Path(model_path).parent / "mobilenet_v3_small-047dcff4.pth", device=device)
+    detector = YOLODetector(model_path, device=device, conf_threshold=det_conf)
+    # reid = ReIDModel(Path(model_path).parent / "mobilenet_v3_small-047dcff4.pth", device=device)
+    reid_model = DINOv2ReID(model_name="facebook/dinov2-large", device="cuda" if torch.cuda.is_available() else "cpu")
     trackers = {0: SingleCameraTracker(0), 1: SingleCameraTracker(1)}
     registry = GlobalRegistry()
     motion_analyzer = MotionAnalyzer()
@@ -448,7 +451,7 @@ def run_pipeline(
                 # Optional ReID embedding refinement (using warped frame for consistency)
                 for det in detections:
                     try:
-                        det.embedding = reid.embed_crop(packet.warped_frame, det.bbox)
+                        det.embedding = reid_model.embed_crop(packet.warped_frame, det.bbox)
                     except Exception:
                         pass
 

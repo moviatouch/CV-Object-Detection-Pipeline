@@ -11,7 +11,7 @@ from scipy.optimize import linear_sum_assignment
 
 from config import (
     BASE_BUFFER_MS,
-    EMBEDDING_SIM_THRESHOLD,
+    EMBEDDING_SIM_THRESHOLDS_BY_CLASS,          # new per‑class thresholds
     ENFORCE_CLASS_CONSISTENCY,
     GLOBAL_EMBEDDING_BANK,
     HOMOGRAPHY_MAX_ERROR,
@@ -55,6 +55,15 @@ class GlobalRegistry:
     def _buffer_ms(self, observation: TrackObservation) -> float:
         speed = float(np.linalg.norm(observation.velocity))
         return BASE_BUFFER_MS + VELOCITY_BUFFER_FACTOR * speed
+
+    # -------------------------------------------------------------------------
+    # Helper: get embedding similarity threshold for a given class
+    # -------------------------------------------------------------------------
+    def _embedding_sim_threshold(self, class_name: str) -> float:
+        """Return the embedding similarity threshold for a specific product class."""
+        if class_name and class_name in EMBEDDING_SIM_THRESHOLDS_BY_CLASS:
+            return EMBEDDING_SIM_THRESHOLDS_BY_CLASS[class_name]
+        return EMBEDDING_SIM_THRESHOLDS_BY_CLASS.get("default", 0.65)
 
     # -------------------------------------------------------------------------
     # Create a new global track from a single observation
@@ -149,8 +158,10 @@ class GlobalRegistry:
             if temporal_iou < TEMPORAL_IOU_THRESHOLD and observation.temporal_iou < TEMPORAL_IOU_THRESHOLD:
                 return 1e6
 
+        # ----- Per‑class embedding threshold -----
+        threshold = self._embedding_sim_threshold(track.class_name)
         embedding_sim = cosine_similarity(track.mean_embedding(), observation.embedding)
-        if embedding_sim < EMBEDDING_SIM_THRESHOLD and track.lifecycle_state != "LOST_RESERVED":
+        if embedding_sim < threshold and track.lifecycle_state != "LOST_RESERVED":
             return 1e6
 
         latest_centroid = track.centroid_history[-1] if track.centroid_history else observation.centroid
@@ -168,6 +179,7 @@ class GlobalRegistry:
         if track.lifecycle_state == "LOST_RESERVED":
             velocity_angle = angle_between(track.last_velocity(), observation.velocity)
             spatial = np.linalg.norm(latest_centroid - observation.centroid)
+            # Use revival thresholds (global, but per‑class could be added similarly if needed)
             if (embedding_sim < REVIVAL_EMBEDDING_THRESHOLD
                     or spatial > REVIVAL_SPATIAL_THRESHOLD
                     or velocity_angle > REVIVAL_ANGLE_THRESHOLD):
@@ -231,7 +243,9 @@ class GlobalRegistry:
             if ENFORCE_CLASS_CONSISTENCY and other.class_id != observation.class_id:
                 continue
             similarity = cosine_similarity(other.embedding, observation.embedding)
-            if similarity > max(best_score, EMBEDDING_SIM_THRESHOLD):
+            # Use per‑class threshold of the other (or observation) – both same class due to consistency
+            threshold = self._embedding_sim_threshold(other.class_name)
+            if similarity > max(best_score, threshold):
                 best_idx = idx
                 best_score = similarity
         if best_idx is None:
@@ -368,6 +382,3 @@ class GlobalRegistry:
         self._mark_missing(timestamp_ms)
 
         return [track for track in self.global_tracks.values() if not track.deleted]
-
-
-
