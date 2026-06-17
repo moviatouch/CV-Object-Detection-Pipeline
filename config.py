@@ -11,11 +11,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 # -----------------------------------------------------------------------------
 # File paths
 # -----------------------------------------------------------------------------
-MODEL_PATH = str(PROJECT_ROOT / "models" / "last.pt")          # YOLO/RT‑DETR model weights
+MODEL_PATH = str(PROJECT_ROOT / "models" / "best_10_6.pt")          # YOLO/RT‑DETR model weights
 ROI_CONFIG_DIR = str(PROJECT_ROOT / "config" / "roi")          # JSON ROI definitions
 
-REID_BACKEND = "dinov2"   # "mobilenet" or "dinov2"
-REID_DINOV2_MODEL = "facebook/dinov2-large"
+# REID_BACKEND = "dinov2"   # "mobilenet" or "dinov2"
+# REID_DINOV2_MODEL = "facebook/dinov2-large"
 
 # -----------------------------------------------------------------------------
 # Detection source
@@ -43,7 +43,7 @@ CONF_MIN_FRAME = 0.4
 
 # Quick return: product must stay outside stable ROI for at least this many frames
 QUICK_RETURN_MIN_OUTSIDE_FRAMES = 0
-QUICK_RETURN_THRESHOLD_MS = 50
+QUICK_RETURN_THRESHOLD_MS = 0
 
 STABLE_LOST_PICKUP_MS = 100.0
 

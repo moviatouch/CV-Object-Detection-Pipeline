@@ -32,9 +32,9 @@ from config import (
     WARP_SIZE,
 )
 from detection.rtdetr_wrapper import YOLODetector
-# from detection.reid import ReIDModel
+from detection.reid import ReIDModel
 import torch
-from detection.reid import DINOv2ReID
+# from detection.reid import DINOv2ReID
 from event.event_manager import EventManager
 from motion.motion_analyzer import MotionAnalyzer
 from multicam.global_registry import GlobalRegistry
@@ -63,6 +63,9 @@ from utils.visualization import (
     draw_roi_edge_normals,
     draw_track_overlay,
 )
+
+# [DEBUG] Import the debug logger
+from debug_logger import DebugLogger
 
 
 @dataclass
@@ -158,6 +161,7 @@ def _iter_detection_ready_bundles(
     detector: YOLODetector,
     *,
     batch_size: int,
+    # [DEBUG] removed debug_logger param – we log detections in the main loop
 ) -> Generator[dict, None, None]:
     """
     Read bundles, run detector in batches, cache frames and detections,
@@ -228,7 +232,7 @@ def _iter_detection_ready_bundles(
         )
 
         # ==========================================================
-        # STORE DETECTIONS IN CACHE
+        # STORE DETECTIONS IN CACHE (no logging here anymore)
         # ==========================================================
         for key, detections in zip(keys, results):
             detection_cache[key] = detections
@@ -260,6 +264,9 @@ def _iter_detection_ready_bundles(
                 )
 
                 if clipped is None:
+                    continue
+
+                if (clipped[2] - clipped[0]) < 32 or (clipped[3] - clipped[1]) < 32:
                     continue
 
                 projected_centroid = np.array(
@@ -315,6 +322,7 @@ def _iter_detection_ready_bundles(
 
             yield bundle
 
+
 def _net_inventory_by_product(event_manager: EventManager) -> Dict[str, int]:
     products = set(event_manager.pickup_count) | set(event_manager.putback_count)
     return {p: event_manager.pickup_count.get(p, 0) - event_manager.putback_count.get(p, 0) for p in sorted(products)}
@@ -362,6 +370,7 @@ def _build_status(
         sync_ok=sync_ok,
     )
 
+
 def run_pipeline(
     video0: str,
     video1: str,
@@ -378,6 +387,12 @@ def run_pipeline(
     timestamp_tag = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     logger = setup_logger(OUTPUT_PATHS.logs / f"{session_id}_{timestamp_tag}.log")
     metrics_tracker = MetricsTracker(session_id=session_id, logger=logger)
+
+    # [DEBUG] Create debug logger
+    debug_logger = DebugLogger(
+        session_id=session_id,
+        output_dir=OUTPUT_PATHS.root,
+    )
 
     # Load cumulative statistics
     cumulative_stats_path = OUTPUT_PATHS.root / "cumulative_stats.json"
@@ -396,12 +411,12 @@ def run_pipeline(
         logger.warning("Homography disabled (error %.2f px)", homography.error_px)
 
     detector = YOLODetector(model_path, device=device, conf_threshold=det_conf)
-    # reid = ReIDModel(Path(model_path).parent / "mobilenet_v3_small-047dcff4.pth", device=device)
-    reid_model = DINOv2ReID(model_name="facebook/dinov2-large", device="cuda" if torch.cuda.is_available() else "cpu")
+    reid = ReIDModel(Path(model_path).parent / "mobilenet_v3_small-047dcff4.pth", device=device)
+    # reid_model = DINOv2ReID(model_name="facebook/dinov2-large", device="cuda" if torch.cuda.is_available() else "cpu")
     trackers = {0: SingleCameraTracker(0), 1: SingleCameraTracker(1)}
     registry = GlobalRegistry()
     motion_analyzer = MotionAnalyzer()
-    event_manager = EventManager(session_id=session_id)
+    event_manager = EventManager(session_id=session_id, debug_logger=debug_logger)   # [DEBUG] pass logger
     reader = SynchronizedVideoReader(video0, video1, roi0, roi1)
     total_frames = _overall_total_frames(reader)
     det_batch_size = max(1, int(DETECTION_BATCH_SIZE))
@@ -426,7 +441,7 @@ def run_pipeline(
         if show_preview:
             cv2.namedWindow(PREVIEW_WINDOW_NAME, cv2.WINDOW_NORMAL)
 
-        bundle_iterator = _iter_detection_ready_bundles(reader, detector, batch_size=det_batch_size)
+        bundle_iterator = _iter_detection_ready_bundles(reader, detector, batch_size=det_batch_size)   # no debug_logger param
 
         while True:
             bundle = next(bundle_iterator, None)
@@ -435,15 +450,20 @@ def run_pipeline(
             metrics_tracker.start_frame()
             packets = bundle["packets"]
             sync_ok = bundle["sync_ok"]
+            desync_frames = bundle.get("desync_frames", 0)
             frames_processed += 1
 
             if not sync_ok:
-                logger.warning("Frame desync (%s frames) – freezing cross‑camera matching", bundle["desync_frames"])
+                logger.warning("Frame desync (%s frames) – freezing cross‑camera matching", desync_frames)
+
+            # [DEBUG] We'll set frame context after we compute frame_avg_conf
+            # But we need to log detections early – we'll set a placeholder then update later.
 
             all_confidences = []
             observations = []
             per_camera_detection_stats = {}
 
+            # First, collect all detections and confidences
             for camera_id, packet in packets.items():
                 detections = bundle["detections"].get(camera_id, [])
                 per_camera_detection_stats[camera_id] = {"original_projected": len(detections)}
@@ -451,25 +471,52 @@ def run_pipeline(
                 # Optional ReID embedding refinement (using warped frame for consistency)
                 for det in detections:
                     try:
-                        det.embedding = reid_model.embed_crop(packet.warped_frame, det.bbox)
+                        det.embedding = reid.embed_crop(packet.warped_frame, det.bbox)
                     except Exception:
                         pass
 
                 all_confidences.extend([d.confidence for d in detections])
-                observations.extend(
-                    trackers[camera_id].update(
-                        detections,
-                        safe_roi_polygon=packet.safe_roi_polygon,
-                        full_roi_polygon=packet.full_roi_polygon,
-                    )
+
+            # Compute average confidence
+            frame_avg_conf = sum(all_confidences) / len(all_confidences) if all_confidences else 0.0
+
+            # [DEBUG] Set frame context now (with frame_avg_conf)
+            first_packet = packets[0]
+            debug_logger.set_frame_context(
+                camera_id=first_packet.camera_id,
+                frame_index=first_packet.frame_index,
+                timestamp_ms=first_packet.timestamp_ms,
+                sync_ok=sync_ok,
+                desync_frames=desync_frames,
+                homography_error_px=homography.error_px,
+                frame_avg_conf=frame_avg_conf,
+                total_frames=total_frames,
+            )
+
+            # [DEBUG] Now log detections for each camera
+            for camera_id, packet in packets.items():
+                detections = bundle["detections"].get(camera_id, [])
+                for det in detections:
+                    debug_logger.log_detection(det)
+
+            # Now update trackers
+            for camera_id, packet in packets.items():
+                detections = bundle["detections"].get(camera_id, [])
+                obs_list = trackers[camera_id].update(
+                    detections,
+                    safe_roi_polygon=packet.safe_roi_polygon,
+                    full_roi_polygon=packet.full_roi_polygon,
                 )
+                # [DEBUG] Log tracker observations
+                for obs in obs_list:
+                    debug_logger.log_tracker_observation(obs)
+                observations.extend(obs_list)
 
                 if packet.frame_index % DETECTION_DEBUG_LOG_INTERVAL == 0:
                     logger.debug("cam=%s frame=%s projected=%s", camera_id, packet.frame_index, len(detections))
                     if PRINT_DETECTION_SUMMARY:
                         print(f"[DETECTION] cam={camera_id} frame={packet.frame_index} projected={len(detections)}")
 
-            frame_avg_conf = sum(all_confidences) / len(all_confidences) if all_confidences else 0.0
             timestamp_ms = max(p.timestamp_ms for p in packets.values())
 
             # Update global registry
@@ -480,6 +527,9 @@ def run_pipeline(
                 sync_ok=sync_ok,
                 motion_lookup={},
             )
+
+            # [DEBUG] Optional: log global registry matches – removed for now to avoid errors
+            # (We can add later if needed)
 
             # Run motion analysis on each track
             for track in tracks:
@@ -501,6 +551,9 @@ def run_pipeline(
                 track.current_update.nearest_edge_index = motion["nearest_edge_index"]
                 track.current_update.edge_normal = motion["edge_normal"]
 
+                # [DEBUG] Log motion analysis
+                debug_logger.log_motion_analysis(track, motion, track.current_update)
+
                 if PRINT_TRACK_STATUS and packet.frame_index % TRACK_STATUS_INTERVAL == 0:
                     dvec = tuple(float(v) for v in track.current_update.displacement_vector)
                     enormal = tuple(float(v) for v in track.current_update.edge_normal)
@@ -512,6 +565,7 @@ def run_pipeline(
                           f"edge={track.current_update.nearest_edge_index} normal={enormal} disp={dvec} "
                           f"conf={track.current_update.confidence:.2f}")
 
+            # Process events (debug logging is inside EventManager)
             events = event_manager.process_frame(tracks, frame_avg_conf, timestamp_ms)
 
             # --- Visualisation ---
@@ -630,6 +684,9 @@ def run_pipeline(
         )
         print(f"\nUpdated cumulative stats: {cumulative_stats.get_summary_line()}")
 
+        # [DEBUG] Close the debug logger to flush remaining rows
+        debug_logger.close()
+
         return PipelineResult(
             session_id=session_id,
             session_path=str(session_path),
@@ -652,6 +709,8 @@ def run_pipeline(
             writer.close()
         if show_preview:
             cv2.destroyAllWindows()
+        # Ensure debug logger is closed even if exception
+        debug_logger.close()
 
 
 def main() -> None:

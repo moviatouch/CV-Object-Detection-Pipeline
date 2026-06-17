@@ -4441,7 +4441,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections import defaultdict, deque
-from typing import Deque, Dict, List, Optional
+from typing import Deque, Dict, List, Optional, Any
 
 import numpy as np
 
@@ -4489,6 +4489,12 @@ from config import (
 )
 from utils.types import GlobalTrack, SessionSummary
 
+# [DEBUG] Import DebugLogger (optional, may be None if not installed)
+try:
+    from debug_logger import DebugLogger
+except ImportError:
+    DebugLogger = None
+
 LOGGER = logging.getLogger("vending_pipeline.events")
 
 
@@ -4498,7 +4504,7 @@ class EventManager:
     and robust quick‑return detection using consecutive frames outside stable ROI.
     """
 
-    def __init__(self, session_id: str):
+    def __init__(self, session_id: str, debug_logger: Optional[Any] = None):   # [DEBUG] debug_logger param
         self.session = SessionSummary(session_id=session_id)
 
         self.pickup_count: Dict[str, int] = defaultdict(int)
@@ -4516,6 +4522,9 @@ class EventManager:
 
         self.last_event_text = ""
         self.recent_overlay_events: Deque[tuple[float, str]] = deque(maxlen=20)
+
+        # [DEBUG] store the debug logger
+        self.debug_logger = debug_logger
 
     # -------------------------------------------------------------------------
     # Identity helpers
@@ -4648,8 +4657,19 @@ class EventManager:
 
         self._log_transition(track, old_state, new_state, reason)
 
+        # [DEBUG] Log state transition via debug logger
+        if self.debug_logger is not None:
+            timestamp_ms = track.current_update.timestamp_ms if track.current_update else track.last_seen_ms
+            self.debug_logger.log_event_manager_state(
+                track=track,
+                old_state=old_state,
+                new_state=new_state,
+                reason=reason,
+                timestamp_ms=timestamp_ms,
+            )
+
     # -------------------------------------------------------------------------
-    # Class voting / locking (unchanged, kept as in your original)
+    # Class voting / locking
     # -------------------------------------------------------------------------
 
     def _roi_weight_for_vote(self, update):
@@ -4738,7 +4758,7 @@ class EventManager:
         self._emit_debug(f"[CLASS-LOCKED] track={track.global_id} locked={locked_class} detected={detected_class} reason={reason} ratio={result['ratio']:.2f} scores={result['scores']}", level="info")
 
     # -------------------------------------------------------------------------
-    # Confirmation helpers (unchanged)
+    # Confirmation helpers
     # -------------------------------------------------------------------------
 
     def _append_confirmation(self, track, confidence):
@@ -4820,7 +4840,7 @@ class EventManager:
         return self._class_consistency_ok(track)
 
     # -------------------------------------------------------------------------
-    # Motion helpers (unchanged)
+    # Motion helpers
     # -------------------------------------------------------------------------
 
     def _required_stability_frames(self, track, timestamp_ms):
@@ -4863,7 +4883,7 @@ class EventManager:
         return False
 
     # -------------------------------------------------------------------------
-    # ROI helpers (unchanged)
+    # ROI helpers
     # -------------------------------------------------------------------------
 
     @staticmethod
@@ -4877,7 +4897,7 @@ class EventManager:
         return was_fully_absent and now_in_roi
 
     # -------------------------------------------------------------------------
-    # Ledger helpers (unchanged, but kept for completeness)
+    # Ledger helpers
     # -------------------------------------------------------------------------
 
     def _has_outstanding_pickup(self, class_name):
@@ -5035,7 +5055,7 @@ class EventManager:
         return is_candidate
 
     # -------------------------------------------------------------------------
-    # Neighbor stability boost (unchanged)
+    # Neighbor stability boost
     # -------------------------------------------------------------------------
 
     def _check_neighbor_stability_boost(self, track, all_tracks):
@@ -5065,7 +5085,7 @@ class EventManager:
                 self._emit_debug(f"[BOOST] neighbor track={neighbor.global_id} -> STABLE_INSIDE by track={track.global_id}", level="debug")
 
     # -------------------------------------------------------------------------
-    # Event recording (unchanged)
+    # Event recording
     # -------------------------------------------------------------------------
 
     def _pickup_ledger_item_from_event(self, track, event):
@@ -5146,6 +5166,18 @@ class EventManager:
             overlay += f" [detected:{detected_class}]"
         self._push_overlay_event(event_timestamp, overlay)
         self._emit_debug(f"[EVENT] {overlay} | cam={event_camera_id} frame={event_frame_index} conf={list(track.confirmation_confidences)} ledger_id={ledger_item['ledger_id']}", level="info")
+
+        # [DEBUG] Log event via debug logger
+        if self.debug_logger is not None:
+            self.debug_logger.log_event_fired(
+                track=track,
+                event_type="pickup",
+                event=event,
+                timestamp_ms=event_timestamp,
+                suppressed=False,
+                suppression_reason=None,
+            )
+
         return event
 
     def _record_putback(self, track):
@@ -5217,19 +5249,32 @@ class EventManager:
             overlay += " [long-hold]"
         self._push_overlay_event(event_timestamp, overlay)
         self._emit_debug(f"[EVENT] {overlay} | cam={event_camera_id} frame={event_frame_index} conf={list(track.confirmation_confidences)} matched_ledger={matched_item['ledger_id'] if matched_item else None}", level="info")
+
+        # [DEBUG] Log event via debug logger
+        if self.debug_logger is not None:
+            self.debug_logger.log_event_fired(
+                track=track,
+                event_type="putback",
+                event=event,
+                timestamp_ms=event_timestamp,
+                suppressed=False,
+                suppression_reason=None,
+            )
+
         return event
 
     # -------------------------------------------------------------------------
-    # Overlay
+    # Overlay (fixed: method was missing)
     # -------------------------------------------------------------------------
 
     def overlay_event_lines(self, timestamp_ms):
+        """Return a list of recent overlay event strings (max OVERLAY_MAX_EVENT_LINES)."""
         while self.recent_overlay_events and (timestamp_ms - self.recent_overlay_events[0][0]) > OVERLAY_EVENT_TTL_MS:
             self.recent_overlay_events.popleft()
         return [item[1] for item in list(self.recent_overlay_events)[-OVERLAY_MAX_EVENT_LINES:]]
 
     # -------------------------------------------------------------------------
-    # Core FSM – with fixed frames_outside_stable handling
+    # Core FSM – with debug logging for blocking and cooldowns
     # -------------------------------------------------------------------------
 
     def _process_track(self, track, timestamp_ms, all_tracks=None):
@@ -5242,12 +5287,10 @@ class EventManager:
         # Update frames_outside_stable for the *next* frame (do not use it for this frame's decisions yet)
         if update is not None:
             if update.in_stable_roi:
-                # We will reset it at the end of the frame, not now
                 track.frames_outside_stable = 0
             else:
                 track.frames_outside_stable += 1
         else:
-            # No detection: treat as outside (product is fully absent)
             track.frames_outside_stable += 1
 
         # =====================================================================
@@ -5354,17 +5397,47 @@ class EventManager:
                 is_inward_or_return = self._is_inward_or_return_motion(track, update, prev_safe, prev_outer, prev_stable)
                 if is_inward_or_return and not has_outward and not has_roi_exit:
                     self._emit_debug(f"[PICKUP-BLOCKED-INWARD] track={track.global_id} event_class={self._event_class(track, purpose='pickup')} detected={self._detected_class(track)} prev_safe={prev_safe} curr_safe={update.in_safe_roi} prev_outer={prev_outer} curr_outer={update.in_outer_roi} prev_stable={prev_stable} curr_stable={update.in_stable_roi} outward={update.outward_motion} inward={update.inward_motion} motion_history={list(track.motion_direction_history)}", level="info")
+                    # [DEBUG] Log blocked inward
+                    if self.debug_logger is not None:
+                        self.debug_logger.log_blocked_inward(
+                            track=track,
+                            reason="inward motion while in stable inside, blocking pickup",
+                            timestamp_ms=update.timestamp_ms,
+                            prev_safe=prev_safe,
+                            curr_safe=update.in_safe_roi,
+                            prev_outer=prev_outer,
+                            curr_outer=update.in_outer_roi,
+                            prev_stable=prev_stable,
+                            curr_stable=update.in_stable_roi,
+                            motion_history=list(track.motion_direction_history),
+                        )
                     return []
                 pickup_like_exit = has_sustained_outward or has_outward or has_roi_exit
                 if pickup_like_exit:
                     if track.last_putback_confirmed_ms is not None and (update.timestamp_ms - track.last_putback_confirmed_ms) < POST_PUTBACK_COOLDOWN_MS:
                         self._emit_debug(f"[COOLDOWN] pickup suppressed track={track.global_id} elapsed={update.timestamp_ms - track.last_putback_confirmed_ms:.0f}ms cooldown={POST_PUTBACK_COOLDOWN_MS}ms", level="debug")
+                        # [DEBUG] Log cooldown suppression
+                        if self.debug_logger is not None:
+                            self.debug_logger.log_cooldown_suppression(
+                                track=track,
+                                cooldown_ms=POST_PUTBACK_COOLDOWN_MS,
+                                elapsed_ms=update.timestamp_ms - track.last_putback_confirmed_ms,
+                                timestamp_ms=update.timestamp_ms,
+                            )
                         return []
                     self._lock_class_if_possible(track, reason="pickup trigger")
                     pickup_class = self._event_class(track, purpose="pickup")
                     last_class_putback_ms = self.last_putback_by_class_ms.get(pickup_class)
                     if last_class_putback_ms is not None and (update.timestamp_ms - last_class_putback_ms) < POST_PUTBACK_COOLDOWN_MS:
                         self._emit_debug(f"[CLASS-COOLDOWN] pickup suppressed track={track.global_id} class={pickup_class} elapsed={update.timestamp_ms - last_class_putback_ms:.0f}ms cooldown={POST_PUTBACK_COOLDOWN_MS}ms", level="debug")
+                        # [DEBUG] Log class cooldown suppression
+                        if self.debug_logger is not None:
+                            self.debug_logger.log_cooldown_suppression(
+                                track=track,
+                                cooldown_ms=POST_PUTBACK_COOLDOWN_MS,
+                                elapsed_ms=update.timestamp_ms - last_class_putback_ms,
+                                timestamp_ms=update.timestamp_ms,
+                            )
                         return []
                     if self._is_valid_class(track.locked_class_name) and self._is_valid_class(track.resolved_class_name) and track.resolved_class_name != track.locked_class_name:
                         self._emit_debug(f"[CLEAR-STALE-RESOLVED-BEFORE-PICKUP] track={track.global_id} resolved={track.resolved_class_name} locked={track.locked_class_name}", level="warning")
@@ -5390,7 +5463,6 @@ class EventManager:
             # Quick return: check using previous frame's outside count (before reset)
             if update.in_stable_roi and not update.outward_motion:
                 time_since_pending_ms = update.timestamp_ms - (track.pending_since_ms or update.timestamp_ms)
-                # Use prev_outside_frames (the count from the previous frame, before reset)
                 was_outside_stable = prev_outside_frames >= QUICK_RETURN_MIN_OUTSIDE_FRAMES
                 if was_outside_stable and time_since_pending_ms < QUICK_RETURN_THRESHOLD_MS:
                     self._transition(track, "PICKED_UP", "quick pickup: stayed outside stable ROI for enough frames")
