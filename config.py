@@ -7,15 +7,33 @@ from pathlib import Path
 # Project root – directory containing this config file
 # -----------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent
+BASE_PATH = str(PROJECT_ROOT)
 
 # -----------------------------------------------------------------------------
 # File paths
 # -----------------------------------------------------------------------------
 MODEL_PATH = str(PROJECT_ROOT / "models" / "best_10_6.pt")          # YOLO/RT‑DETR model weights
 ROI_CONFIG_DIR = str(PROJECT_ROOT / "config" / "roi")          # JSON ROI definitions
+VICKI_APP   = "http://192.168.1.140:8085/tsv/flashapi"
 
 # REID_BACKEND = "dinov2"   # "mobilenet" or "dinov2"
 # REID_DINOV2_MODEL = "facebook/dinov2-large"
+
+
+# Map model detection names to dashboard (planogram) product names
+MODEL_TO_DASHBOARD_MAPPING = {
+    "Aquafina": "Aquafina",
+    "Barebells Caramel Cashew": "Barebells - Caramel Cashew",
+    "Barebells Cookies and Cream": "Barebells - Cookies & Cream",
+    "Legendary Tasty Pastry - Strawberry": "Legendary Tasty Pastry - Strawberry",
+    "One Bar - Hersheys Cookies N Cream": "One Bar - Hershey's Cookies N Cream",
+    "One Bar - Reess PB Lovers": "One Bar - Reese's PB Lovers",
+    "Quest Chips Chili Lime": "Quest Chips Chili Lime",
+    "Quest Chips Hot and Spicy": "Quest Chips - Hot & Spicy",
+    "Quest Chips Nacho Cheese": "Quest Chips - Nacho Cheese",
+    "Skullcandy DIME 3": "Skullcandy DIME 3",
+}
+
 
 # -----------------------------------------------------------------------------
 # Detection source

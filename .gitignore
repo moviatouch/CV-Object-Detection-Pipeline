@@ -102,3 +102,11 @@ session*
 cumulative*
 
 test
+camera-preview-pipeline/
+access_token.txt
+run_instructions.txt
+media.txt
+post_archive
+temp
+temp_archive
+
