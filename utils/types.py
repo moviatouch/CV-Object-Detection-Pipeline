@@ -188,6 +188,14 @@ class GlobalTrack:
     # never stabilised (cancel silently).  Never reset after being set.
     was_stable: bool = False
 
+    # Timestamp (ms) when this track first entered the shelf area (INSIDE state).
+    # Used as a time-based self-anchor for corner/edge products that never reach
+    # STABLE_INSIDE due to camera geometry.  Set once on first INSIDE observation;
+    # cleared to None after a confirmed pickup so each new interaction cycle starts
+    # fresh.  Never reset by pickup cancellations — dwell accumulates across
+    # cancelled PICKUP_PENDING retries.
+    inside_entered_ms: Optional[float] = None
+
     # True while this track is in the long-hold putback fallback
     # path (elapsed time > CLASS_RETURN_MAX_GAP_MS).  Cleared on any non-pending
     # transition.

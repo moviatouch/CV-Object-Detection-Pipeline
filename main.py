@@ -541,7 +541,7 @@ def run_pipeline(
                     track,
                     packet.full_roi_polygon,
                     np.asarray(canonical_edge_normals, dtype=np.float32),
-                    np.asarray([0.0, 1.0], dtype=np.float32),
+                    np.asarray([0.0, -1.0], dtype=np.float32),
                 )
                 track.current_update.outward_motion = motion["outward_motion"]
                 track.current_update.inward_motion = motion["inward_motion"]

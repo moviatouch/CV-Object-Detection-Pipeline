@@ -4452,6 +4452,9 @@ from config import (
     CONF_THRESHOLD,
     LONG_BOUNDARY_STABILITY_FRAMES,
     MISSING_PENDING_CONFIRM_MS,
+    CROSS_CAM_DEDUP_MS,
+    CROSS_CAM_LOCK_SCORE_MARGIN,
+    SAME_CAM_DEDUP_MS,
     OVERLAY_EVENT_TTL_MS,
     OVERLAY_MAX_EVENT_LINES,
     POST_PUTBACK_COOLDOWN_MS,
@@ -4473,6 +4476,7 @@ from config import (
     UNKNOWN_UNSTABLE_CLASS,
     ENABLE_CLASS_DRIFT_WARNINGS,
 
+    CORNER_PICKUP_MIN_INSIDE_MS,
     PENDING_LEDGER_MAX_AGE_MS,
     PUTBACK_LEDGER_MATCH_THRESHOLD,
     LEDGER_MATCH_WEIGHT_CLASS,
@@ -4520,6 +4524,13 @@ class EventManager:
 
         self.min_valid_putback_hold_ms = 500.0
 
+        # Set to True the first time a was_stable=True product confirms a pickup in
+        # this session. Used to tighten the lost-outside gate for subsequent
+        # was_stable=False tracks (a stable product was already confirmed, so any
+        # later fast-snatch that lingers in the outer ROI without an anchor is likely
+        # a false trigger from arm motion near an adjacent product).
+        self._session_had_any_pickup = False
+
         self.last_event_text = ""
         self.recent_overlay_events: Deque[tuple[float, str]] = deque(maxlen=20)
 
@@ -4543,10 +4554,16 @@ class EventManager:
             track.class_drift_flagged = False
         if not hasattr(track, "visual_embedding"):
             track.visual_embedding = None
+        if not hasattr(track, "outward_evidence_seen"):
+            track.outward_evidence_seen = False
+        if not hasattr(track, "confirm_outer_attempted"):
+            track.confirm_outer_attempted = False
         if not hasattr(track, "frames_outside_stable"):
             track.frames_outside_stable = 0
         if not hasattr(track, "prev_update"):
             track.prev_update = None
+        if not hasattr(track, "inside_entered_ms"):
+            track.inside_entered_ms = None
 
     def _is_valid_class(self, class_name):
         return bool(class_name) and class_name != UNKNOWN_UNSTABLE_CLASS
@@ -4648,6 +4665,23 @@ class EventManager:
         if new_state == "STABLE_INSIDE":
             track.was_stable = True
             self._lock_class_if_possible(track, reason="entered STABLE_INSIDE")
+
+        if new_state == "PICKED_UP":
+            # Discard pre-pickup motion so stale inward frames (e.g. hand approach)
+            # cannot falsely trigger putback after the pickup is confirmed.
+            track.motion_direction_history.clear()
+            # Reset absent-after-pickup tracking. Putback triggers are gated behind
+            # this flag so a tracker jump to a shelf neighbor (no absent period) cannot
+            # fire a false putback. has_reentry is exempt — it signals a real boundary cross.
+            track.was_absent_after_pickup = False
+            track.absent_after_pickup_frames = 0
+            # Reset Pattern-B settle-putback flag — fresh per pickup event.
+            track.putback_hold_stable_roi_seen = False
+
+        if new_state == "PICKUP_PENDING":
+            # Fresh PICKUP_PENDING period — reset the outer-ROI linger flag so
+            # each pending attempt is evaluated independently.
+            track.confirm_outer_attempted = False
 
         if new_state in {"PICKUP_PENDING", "PUTBACK_PENDING"}:
             track.confirmation_confidences.clear()
@@ -4752,6 +4786,7 @@ class EventManager:
             return
         track.locked_class_name = locked_class
         track.resolved_class_name = locked_class
+        track.class_lock_score = result["scores"].get(locked_class, 0.0)
         detected_class = self._detected_class(track)
         if detected_class != locked_class:
             track.class_drift_flagged = True
@@ -5029,11 +5064,16 @@ class EventManager:
         update = track.current_update
         if update is None:
             return False
-        if track.was_stable:
-            return False
-        has_inward = update.inward_motion or self._has_any_recent_inward_motion(track, look_back=5)
-        if not has_inward:
-            return False
+        # [OLD LOGIC]
+        # has_inward = update.inward_motion or self._has_any_recent_inward_motion(track, look_back=5)
+        # if not has_inward:
+        #     return False
+
+        # [NEW LOGIC - 2026-06-18] Resting-State Dwell
+        # Removed dependency on instantaneous inward_motion vectors. Putbacks are now armed based on 
+        # position and dwell frames rather than brittle motion vectors.
+        has_inward = True  # Forced to True to bypass vector checks
+
         candidate_class = track.locked_class_name if self._is_valid_class(track.locked_class_name) else self._voted_event_class(track)
         exact_class_return = self._has_outstanding_pickup(candidate_class)
         latest_pickup_ts = None
@@ -5048,8 +5088,7 @@ class EventManager:
             return False
         within_gap = (update.timestamp_ms - latest_pickup_ts) <= CLASS_RETURN_MAX_GAP_MS
         born_after_pickup = track.created_ms >= latest_pickup_ts
-        not_previously_stable = not track.was_stable
-        is_candidate = within_gap and born_after_pickup and not_previously_stable and has_inward
+        is_candidate = within_gap and born_after_pickup and has_inward
         if is_candidate and ledger_match is not None:
             track.resolved_class_name = ledger_match["event_class"]
         return is_candidate
@@ -5119,6 +5158,8 @@ class EventManager:
 
     def _record_pickup(self, track):
         self._ensure_identity_fields(track)
+        
+
         update = track.current_update
         event_class = self._event_class(track, purpose="pickup")
         if event_class == UNKNOWN_UNSTABLE_CLASS:
@@ -5130,11 +5171,13 @@ class EventManager:
             event_class = track.locked_class_name
             track.resolved_class_name = event_class
         self.pickup_count[event_class] += 1
+        self._session_had_any_pickup = True
         event_timestamp = track.last_seen_ms if update is None else update.timestamp_ms
         event_camera_id = track.last_camera_id if update is None else update.camera_id
         event_frame_index = track.last_frame_index if update is None else update.frame_index
         self.class_pickup_timestamps[event_class].append(event_timestamp)
         track.pickup_confirmed_ms = event_timestamp
+        track.inside_entered_ms = None  # reset self-anchor; next interaction cycle starts fresh
         track.resolved_class_name = event_class
         class_drift = detected_class != event_class
         event = {
@@ -5153,6 +5196,7 @@ class EventManager:
             "confidence": float(sum(track.confirmation_confidences) / max(len(track.confirmation_confidences), 1)),
             "confidence_window": list(track.confirmation_confidences),
             "confirmation_class_votes": list(track.confirmation_class_votes),
+            "class_lock_score": float(getattr(track, "class_lock_score", 0.0)),
         }
         if ENABLE_CLASS_DRIFT_WARNINGS and event["class_drift"]:
             event["warnings"] = [f"class drift observed on pickup: detected={detected_class}, resolved={event_class}"]
@@ -5299,18 +5343,100 @@ class EventManager:
         if update is None:
             if track.event_state == "PICKUP_PENDING":
                 if self._pending_timeout_elapsed(track, timestamp_ms):
-                    if self._has_any_recent_outward_motion(track, look_back=5):
-                        self._transition(track, "PICKED_UP", "pickup confirmed: lost outward motion")
-                        return [self._record_pickup(track)]
-                    if track.was_stable:
-                        self._transition(track, "PICKED_UP", "pickup confirmed: lost was stable occlusion/vertical")
+                    # [OLD LOGIC]
+                    # if self._has_any_recent_outward_motion(track, look_back=5):
+                    #     self._transition(track, "PICKED_UP", "pickup confirmed: lost outward motion")
+                    #     return [self._record_pickup(track)]
+                    # if track.was_stable:
+                    #     self._transition(track, "PICKED_UP", "pickup confirmed: lost was stable occlusion/vertical")
+                    #     event = self._record_pickup(track)
+                    #     event["occlusion_pickup"] = True
+                    #     self._replace_last_overlay(f"PICKUP {event['class']} G{track.global_id} [occluded]")
+                    #     return [event]
+                    # self._emit_debug(f"[SILENT-CANCEL] track={track.global_id} never reached stability — suppressed", level="debug")
+                    # self._transition(track, "INSIDE", "pickup cancelled: never reached stability")
+                    # return []
+
+                    # Lost-outside gate — three-tier decision:
+                    #
+                    # STRICT (was_stable=True): traditional path, requires last_outside.
+                    #
+                    # BLOCKED: any of these conditions mean the track should NOT confirm:
+                    #   1. confirm_outer_attempted=True  — the track lingered in the outer ROI
+                    #      for ≥4 consecutive frames but had no STABLE_INSIDE anchor to validate
+                    #      it. This is the signature of arm-disturbance false triggers (the arm
+                    #      holds a neighbouring product at the shelf edge for several frames).
+                    #      A genuine fast-grab exits so quickly the tracker never accumulates
+                    #      4 outer-ROI frames.
+                    #   2. session_had_stable_pickup=True — a was_stable=True product was already
+                    #      confirmed in this session. Any subsequent was_stable=False fast-snatch
+                    #      that wasn't validated via CONFIRM-OUTER (with a stable anchor) is
+                    #      treated as a false tracker jump to an adjacent product.
+                    #
+                    # LENIENT (was_stable=False, no blocking condition): first fast-snatch in
+                    #   the session that exited too quickly to accumulate outer-ROI frames.
+                    #   Allow if last_outside + outward_evidence.
+                    last_outside = track.last_seen_in_outer_roi or self._has_any_recent_outward_motion(track, look_back=5)
+                    was_stable = getattr(track, "was_stable", False)
+                    outward_ev = getattr(track, "outward_evidence_seen", False)
+                    confirm_outer_attempted = getattr(track, "confirm_outer_attempted", False)
+                    session_had_pickup = getattr(self, "_session_had_any_pickup", False)
+
+                    if was_stable:
+                        allow_lost_outside = last_outside and outward_ev
+                    elif confirm_outer_attempted or session_had_pickup:
+                        # If a pickup already occurred in this session, block ALL
+                        # was_stable=False fast-snatch confirmations via the corner
+                        # path. Neighboring items have high dwell (they've been on
+                        # the shelf the whole video) so dwell alone cannot
+                        # distinguish them from genuine pickups.
+                        if session_had_pickup:
+                            # Block false pickups from neighbors UNLESS this is
+                            # a genuine putback candidate (item returned to shelf).
+                            is_putback_candidate = self._is_class_return_candidate(track)
+                            if not is_putback_candidate:
+                                allow_lost_outside = False
+                                self._emit_debug(
+                                    f"[CORNER-LOST-OUTSIDE-BLOCKED] track={track.global_id} "
+                                    f"session already has a pickup — blocking was_stable=False lost-outside",
+                                    level="debug"
+                                )
+                            else:
+                                # Allow this track to proceed — it is a putback, not a second pickup
+                                allow_lost_outside = last_outside and outward_ev
+                                self._emit_debug(
+                                    f"[CORNER-LOST-OUTSIDE-PUTBACK-PASS] track={track.global_id} "
+                                    f"is a putback candidate — allowing lost-outside despite session pickup",
+                                    level="info"
+                                )
+
+                        else:
+                            entered_ms = getattr(track, "inside_entered_ms", None)
+                            dwell_end_ms = track.pending_since_ms if track.pending_since_ms is not None else timestamp_ms
+                            inside_dwell_ms = (
+                                dwell_end_ms - entered_ms
+                                if entered_ms is not None else 0.0
+                            )
+                            inside_dwell_ok = inside_dwell_ms >= CORNER_PICKUP_MIN_INSIDE_MS
+                            allow_lost_outside = inside_dwell_ok and last_outside and outward_ev
+                            if inside_dwell_ok and last_outside and outward_ev:
+                                self._emit_debug(
+                                    f"[CORNER-LOST-OUTSIDE] track={track.global_id} "
+                                    f"dwell={inside_dwell_ms:.0f}ms >= {CORNER_PICKUP_MIN_INSIDE_MS:.0f}ms "
+                                    f"— corner product lost-outside path allowed",
+                                    level="info"
+                                )
+                    else:
+                        allow_lost_outside = last_outside and outward_ev
+
+                    if allow_lost_outside:
+                        self._transition(track, "PICKED_UP", "pickup confirmed: lost-outside and outward evidence passed")
                         event = self._record_pickup(track)
-                        event["occlusion_pickup"] = True
-                        self._replace_last_overlay(f"PICKUP {event['class']} G{track.global_id} [occluded]")
-                        return [event]
-                    self._emit_debug(f"[SILENT-CANCEL] track={track.global_id} never reached stability — suppressed", level="debug")
-                    self._transition(track, "INSIDE", "pickup cancelled: never reached stability")
-                    return []
+                        return [] if event is None else [event]
+                    else:
+                        self._emit_debug(f"[LOST-INSIDE-CANCEL] track={track.global_id} dropped inside shelf or no outward evidence", level="debug")
+                        self._transition(track, "INSIDE", "pickup cancelled: lost-inside occlusion or missing outward evidence")
+                        return []
             if track.event_state == "PUTBACK_PENDING":
                 if self._pending_timeout_elapsed(track, timestamp_ms):
                     if track.last_seen_in_stable_roi is True and self._has_any_recent_inward_motion(track, look_back=5):
@@ -5359,12 +5485,31 @@ class EventManager:
         # STATE: INSIDE
         # =====================================================================
         if track.event_state == "INSIDE":
+            # Record the first moment this track entered the shelf area.
+            # Used as a time-based self-anchor for corner products (see CORNER_PICKUP_MIN_INSIDE_MS).
+            if getattr(track, "inside_entered_ms", None) is None:
+                track.inside_entered_ms = update.timestamp_ms
             if self._is_class_return_candidate(track):
                 self._transition(track, "PUTBACK_PENDING", "class/ledger inward re-entry candidate")
                 track.pending_since_ms = update.timestamp_ms
                 self._seed_class_return_confirmation(track)
                 self._emit_debug(f"[PENDING] putback track={track.global_id} event_class={self._event_class(track, purpose='putback')} detected={self._detected_class(track)}", level="info")
                 return []
+            
+            # [NEW LOGIC - 2026-06-18] Absence-Persistence Rule for Fast Snatches
+            # We relax the STABLE_INSIDE requirement. If a fast snatch exits the ROI, we allow it to go to PENDING.
+            if not update.in_safe_roi:
+                has_huge_displacement = update.displacement_magnitude > 100.0
+                has_outward = self._has_any_recent_outward_motion(track, look_back=3) or has_huge_displacement
+                has_sustained_outward = self._has_sustained_outward_motion(track, min_consecutive=2)
+                has_roi_exit = self._roi_exit_occurred(track, update, prev_stable)
+                pickup_like_exit = has_sustained_outward or has_roi_exit or has_outward
+                if pickup_like_exit:
+                    track.outward_evidence_seen = (has_outward or has_sustained_outward or has_roi_exit)
+                    self._transition(track, "PICKUP_PENDING", "fast snatch (INSIDE -> PENDING)")
+                    track.pending_since_ms = update.timestamp_ms
+                    self._seed_confirmation_from_history(track)
+                    return []
             if update.in_stable_roi and update.confidence >= CONF_THRESHOLD:
                 track.inside_counter += 1
                 if track.inside_counter >= required_stability:
@@ -5391,13 +5536,13 @@ class EventManager:
 
             # Pickup trigger
             if not update.in_safe_roi:
-                has_outward = self._has_any_recent_outward_motion(track, look_back=3)
+                has_huge_displacement = update.displacement_magnitude > 100.0
+                has_outward = self._has_any_recent_outward_motion(track, look_back=3) or has_huge_displacement
                 has_sustained_outward = self._has_sustained_outward_motion(track, min_consecutive=2)
                 has_roi_exit = self._roi_exit_occurred(track, update, prev_stable)
                 is_inward_or_return = self._is_inward_or_return_motion(track, update, prev_safe, prev_outer, prev_stable)
                 if is_inward_or_return and not has_outward and not has_roi_exit:
                     self._emit_debug(f"[PICKUP-BLOCKED-INWARD] track={track.global_id} event_class={self._event_class(track, purpose='pickup')} detected={self._detected_class(track)} prev_safe={prev_safe} curr_safe={update.in_safe_roi} prev_outer={prev_outer} curr_outer={update.in_outer_roi} prev_stable={prev_stable} curr_stable={update.in_stable_roi} outward={update.outward_motion} inward={update.inward_motion} motion_history={list(track.motion_direction_history)}", level="info")
-                    # [DEBUG] Log blocked inward
                     if self.debug_logger is not None:
                         self.debug_logger.log_blocked_inward(
                             track=track,
@@ -5412,37 +5557,18 @@ class EventManager:
                             motion_history=list(track.motion_direction_history),
                         )
                     return []
-                pickup_like_exit = has_sustained_outward or has_outward or has_roi_exit
+                # ROI exit from stable state is the primary signal; no extra motion gate needed
+                # because HOVER_CANCEL in PICKUP_PENDING already discards detector jitter.
+                pickup_like_exit = has_sustained_outward or has_roi_exit or has_outward
                 if pickup_like_exit:
-                    if track.last_putback_confirmed_ms is not None and (update.timestamp_ms - track.last_putback_confirmed_ms) < POST_PUTBACK_COOLDOWN_MS:
-                        self._emit_debug(f"[COOLDOWN] pickup suppressed track={track.global_id} elapsed={update.timestamp_ms - track.last_putback_confirmed_ms:.0f}ms cooldown={POST_PUTBACK_COOLDOWN_MS}ms", level="debug")
-                        # [DEBUG] Log cooldown suppression
-                        if self.debug_logger is not None:
-                            self.debug_logger.log_cooldown_suppression(
-                                track=track,
-                                cooldown_ms=POST_PUTBACK_COOLDOWN_MS,
-                                elapsed_ms=update.timestamp_ms - track.last_putback_confirmed_ms,
-                                timestamp_ms=update.timestamp_ms,
-                            )
-                        return []
+                    track.outward_evidence_seen = True
                     self._lock_class_if_possible(track, reason="pickup trigger")
                     pickup_class = self._event_class(track, purpose="pickup")
-                    last_class_putback_ms = self.last_putback_by_class_ms.get(pickup_class)
-                    if last_class_putback_ms is not None and (update.timestamp_ms - last_class_putback_ms) < POST_PUTBACK_COOLDOWN_MS:
-                        self._emit_debug(f"[CLASS-COOLDOWN] pickup suppressed track={track.global_id} class={pickup_class} elapsed={update.timestamp_ms - last_class_putback_ms:.0f}ms cooldown={POST_PUTBACK_COOLDOWN_MS}ms", level="debug")
-                        # [DEBUG] Log class cooldown suppression
-                        if self.debug_logger is not None:
-                            self.debug_logger.log_cooldown_suppression(
-                                track=track,
-                                cooldown_ms=POST_PUTBACK_COOLDOWN_MS,
-                                elapsed_ms=update.timestamp_ms - last_class_putback_ms,
-                                timestamp_ms=update.timestamp_ms,
-                            )
-                        return []
                     if self._is_valid_class(track.locked_class_name) and self._is_valid_class(track.resolved_class_name) and track.resolved_class_name != track.locked_class_name:
                         self._emit_debug(f"[CLEAR-STALE-RESOLVED-BEFORE-PICKUP] track={track.global_id} resolved={track.resolved_class_name} locked={track.locked_class_name}", level="warning")
                         track.resolved_class_name = track.locked_class_name
                     trigger_reason = "outward exit + motion" if (has_outward or has_sustained_outward) else "ROI exit without motion vertical/edge/fast/low-tray pick"
+                    track.outward_evidence_seen = (has_outward or has_sustained_outward or has_roi_exit)
                     self._transition(track, "PICKUP_PENDING", trigger_reason)
                     track.pending_since_ms = update.timestamp_ms
                     self._seed_confirmation_from_history(track)
@@ -5464,19 +5590,26 @@ class EventManager:
             if update.in_stable_roi and not update.outward_motion:
                 time_since_pending_ms = update.timestamp_ms - (track.pending_since_ms or update.timestamp_ms)
                 was_outside_stable = prev_outside_frames >= QUICK_RETURN_MIN_OUTSIDE_FRAMES
-                if was_outside_stable and time_since_pending_ms < QUICK_RETURN_THRESHOLD_MS:
-                    self._transition(track, "PICKED_UP", "quick pickup: stayed outside stable ROI for enough frames")
-                    pickup_event = self._record_pickup(track)
-                    self._frame_net_snapshot[pickup_event["class"]] = self._frame_net_snapshot.get(pickup_event["class"], 0) + 1
-                    track.resolved_class_name = pickup_event["class"]
-                    self._transition(track, "PUTBACK_PENDING", "quick return: fast re-entry")
-                    track.pending_since_ms = update.timestamp_ms
-                    self._seed_confirmation_from_history(track)
-                    self._emit_debug(f"[QUICK-RETURN] track={track.global_id} time_ms={time_since_pending_ms:.0f} outside_frames={prev_outside_frames} event_class={pickup_event['class']} detected={self._detected_class(track)}", level="info")
-                    return [pickup_event]
-                # Cancel – not enough evidence
-                self._emit_debug(f"[CANCEL] pickup track={track.global_id} re-entered stable ROI without enough outside frames (outside_frames={prev_outside_frames})", level="info")
-                self._transition(track, "STABLE_INSIDE", "pickup cancelled: not enough time outside stable ROI")
+                # [OLD LOGIC]
+                # if was_outside_stable and time_since_pending_ms < QUICK_RETURN_THRESHOLD_MS:
+                #     self._transition(track, "PICKED_UP", "quick pickup: stayed outside stable ROI for enough frames")
+                #     pickup_event = self._record_pickup(track)
+                #     self._frame_net_snapshot[pickup_event["class"]] = self._frame_net_snapshot.get(pickup_event["class"], 0) + 1
+                #     track.resolved_class_name = pickup_event["class"]
+                #     self._transition(track, "PUTBACK_PENDING", "quick return: fast re-entry")
+                #     track.pending_since_ms = update.timestamp_ms
+                #     self._seed_confirmation_from_history(track)
+                #     self._emit_debug(f"[QUICK-RETURN] track={track.global_id} time_ms={time_since_pending_ms:.0f} outside_frames={prev_outside_frames} event_class={pickup_event['class']} detected={self._detected_class(track)}", level="info")
+                #     return [pickup_event]
+                # # Cancel – not enough evidence
+                # self._emit_debug(f"[CANCEL] pickup track={track.global_id} re-entered stable ROI without enough outside frames (outside_frames={prev_outside_frames})", level="info")
+                # self._transition(track, "STABLE_INSIDE", "pickup cancelled: not enough time outside stable ROI")
+                # return []
+
+                # [NEW LOGIC - 2026-06-18] Hover Cancellation Rule (Clean Cancel)
+                # If item returns inside the stable ROI before T expires, it is a hover, not a pickup/putback pair.
+                self._emit_debug(f"[HOVER-CANCEL] pickup track={track.global_id} cancelled: hover detected (returned before timeout)", level="info")
+                self._transition(track, "STABLE_INSIDE", "pickup cancelled: hover cancellation")
                 return []
 
             # Cancel if sustained inward motion returns before confirmation
@@ -5488,10 +5621,11 @@ class EventManager:
             if not update.in_outer_roi:
                 self._append_confirmation(track, update.confidence)
                 confirmation_ok = self._confirmation_ok(track, require_class_consistency=False)
-                timeout_absent_ok = track.was_stable and (update.timestamp_ms - (track.pending_since_ms or update.timestamp_ms)) > 100 and not self._has_any_recent_inward_motion(track, look_back=5)
+                timeout_absent_ok = track.was_stable and (update.timestamp_ms - (track.pending_since_ms or update.timestamp_ms)) > 100 and not self._has_any_recent_inward_motion(track, look_back=5) and getattr(track, "outward_evidence_seen", False)
                 if confirmation_ok or timeout_absent_ok:
                     self._transition(track, "PICKED_UP", "pickup confirmed: SAFE -> OUTER -> ABSENT")
-                    return [self._record_pickup(track)]
+                    event = self._record_pickup(track)
+                    return [] if event is None else [event]
                 return []
 
             if update.in_outer_roi:
@@ -5510,6 +5644,79 @@ class EventManager:
                         self._emit_debug(f"[CANCEL] pickup track={track.global_id} class consistency too low in OUTER", level="info")
                         self._transition(track, "STABLE_INSIDE", "pickup cancelled: class consistency too low")
                         return []
+                    # conf_ok and class_ok both passed — confirm now if we have directional
+                    # evidence (roi_exit or outward motion). Without this, the only confirm
+                    # path is product fully exiting outer_roi, which never happens for slow
+                    # pickups where the hand stays visible at the shelf edge.
+                    if getattr(track, "outward_evidence_seen", False):
+                        # For was_stable=False tracks: require at least one OTHER track to
+                        # currently be in STABLE_INSIDE as a contextual anchor before allowing
+                        # CONFIRM-OUTER. Without an anchor, the 4-frame outer-ROI accumulation
+                        # is more likely an arm-disturbance false trigger than a real pickup.
+                        # was_stable=True tracks bypass this check — the product was already
+                        # confirmed as stably on the shelf before it was grabbed.
+                        outer_ok = True
+                        if not getattr(track, "was_stable", False) and all_tracks is not None:
+                            anchor_exists = any(
+                                t.event_state == "STABLE_INSIDE" and t.global_id != track.global_id
+                                for t in all_tracks
+                            )
+                            # Self-anchor: a product that has been in the shelf area for
+                            # >= CORNER_PICKUP_MIN_INSIDE_MS has proven it is a genuine shelf
+                            # item even without a STABLE_INSIDE neighbour.  This handles corner
+                            # and edge-shelf products where camera geometry prevents STABLE_INSIDE.
+                            entered_ms = getattr(track, "inside_entered_ms", None)
+                            dwell_end_ms = track.pending_since_ms if track.pending_since_ms is not None else update.timestamp_ms
+                            inside_dwell_ms = (
+                                dwell_end_ms - entered_ms
+                                if entered_ms is not None else 0.0
+                            )
+                            inside_dwell_ok = inside_dwell_ms >= CORNER_PICKUP_MIN_INSIDE_MS
+                            
+                            session_had_pickup = getattr(self, "_session_had_any_pickup", False)
+                            if session_had_pickup:
+                                # After a pickup has already occurred, block ALL
+                                # was_stable=False fast-snatch confirmations —
+                                # UNLESS this track is a genuine putback candidate
+                                # (item being returned to shelf after being picked up).
+                                is_putback_candidate = self._is_class_return_candidate(track)
+                                if not is_putback_candidate:
+                                    anchor_exists = False
+                                    inside_dwell_ok = False
+                                    self._emit_debug(
+                                        f"[CONFIRM-OUTER-SESSION-BLOCK] track={track.global_id} "
+                                        f"session already has a pickup — blocking was_stable=False confirm-outer",
+                                        level="debug"
+                                    )
+                                else:
+                                    self._emit_debug(
+                                        f"[CONFIRM-OUTER-PUTBACK-PASS] track={track.global_id} "
+                                        f"is a putback candidate — allowing despite session pickup",
+                                        level="info"
+                                    )
+                                
+
+                            if not anchor_exists and not inside_dwell_ok:
+                                track.confirm_outer_attempted = True
+                                self._emit_debug(
+                                    f"[CONFIRM-OUTER-BLOCKED] track={track.global_id} was_stable=False, "
+                                    f"no STABLE_INSIDE anchor, dwell={inside_dwell_ms:.0f}ms < {CORNER_PICKUP_MIN_INSIDE_MS:.0f}ms "
+                                    f"— marking as outer-linger, lost-outside will be strict",
+                                    level="debug"
+                                )
+                                outer_ok = False
+                            elif not anchor_exists and inside_dwell_ok:
+                                self._emit_debug(
+                                    f"[CORNER-ANCHOR] track={track.global_id} no STABLE_INSIDE neighbour "
+                                    f"but shelf dwell={inside_dwell_ms:.0f}ms >= {CORNER_PICKUP_MIN_INSIDE_MS:.0f}ms "
+                                    f"— corner/edge product self-anchor accepted",
+                                    level="info"
+                                )
+                        if outer_ok:
+                            self._emit_debug(f"[CONFIRM-OUTER] pickup track={track.global_id} confirmed in outer ROI with outward evidence", level="info")
+                            self._transition(track, "PICKED_UP", "pickup confirmed: outer ROI with outward evidence")
+                            event = self._record_pickup(track)
+                            return [] if event is None else [event]
                 if self._has_any_recent_outward_motion(track, look_back=3):
                     return []
                 if self._pending_timeout_elapsed(track, update.timestamp_ms):
@@ -5537,11 +5744,84 @@ class EventManager:
                 self._emit_debug(f"[LONG-HOLD] track={track.global_id} event_class={self._event_class(track, purpose='putback')} detected={self._detected_class(track)} elapsed_ms={time_since_pickup_ms:.0f}", level="info")
                 return []
             if time_since_pickup_ms < self.min_valid_putback_hold_ms:
+                # [PATTERN-B FIX] During hold window, track if item enters STABLE ROI.
+                # Outer ROI is excluded (user may be holding/checking item near shelf).
+                # Only stable ROI means item is physically placed back on the shelf.
+                if update.in_stable_roi:
+                    track.putback_hold_stable_roi_seen = True
+                    self._emit_debug(
+                        f"[PUTBACK-HOLD-STABLE] track={track.global_id} item in stable ROI during hold "
+                        f"elapsed={time_since_pickup_ms:.0f}ms — flagged for settle-putback",
+                        level="debug"
+                    )
                 self._emit_debug(f"[PUTBACK-HOLD] suppressed early putback track={track.global_id} elapsed={time_since_pickup_ms:.0f}ms min_hold={self.min_valid_putback_hold_ms:.0f}ms", level="debug")
                 return []
-            has_inward = self._has_any_recent_inward_motion(track, look_back=5)
+            # Track absent-from-all-ROIs frames. A real return must have an absent
+            # period (product leaves shelf, then comes back). A tracker jump to a
+            # shelf neighbor goes directly into the stable ROI with no absent gap.
+            in_any_roi = update.in_safe_roi or update.in_stable_roi or update.in_outer_roi
+            if not in_any_roi:
+                track.absent_after_pickup_frames = getattr(track, "absent_after_pickup_frames", 0) + 1
+                if track.absent_after_pickup_frames >= 5:
+                    track.was_absent_after_pickup = True
+                # [PATTERN-B FIX] If item was seen in stable ROI during hold window
+                # and has now gone absent (settled on shelf below detector threshold),
+                # directly fire putback without requiring PUTBACK_PENDING confirmation.
+                # The item was already confirmed in stable ROI during hold — no need
+                # for another confirmation round. Item simply settled below threshold.
+                # NOTE: Outer ROI during hold is NOT used (avoids false putback when
+                # user checks item near shelf in Scenario 2).
+                if getattr(track, "putback_hold_stable_roi_seen", False):
+                    absent_frames = getattr(track, "absent_after_pickup_frames", 0)
+                    self._emit_debug(
+                        f"[SETTLE-PUTBACK-TRACE] track={track.global_id} absent_frames={absent_frames} "
+                        f"hold_stable_seen={getattr(track, 'putback_hold_stable_roi_seen', False)} "
+                        f"elapsed={time_since_pickup_ms:.0f}ms",
+                        level="info"
+                    )
+                    if absent_frames >= 3:  # 3 consecutive absent frames = truly settled
+                        self._emit_debug(
+                            f"[SETTLE-PUTBACK] track={track.global_id} item settled on shelf after "
+                            f"stable-ROI presence during hold (absent={absent_frames} frames) — firing putback",
+                            level="info"
+                        )
+                        matched = self._match_putback_to_pending_pickup(track, update.timestamp_ms)
+                        if matched is not None:
+                            track.resolved_class_name = matched["event_class"]
+                        # Directly record putback — item was already in stable ROI,
+                        # just settled below detector confidence threshold.
+                        self._transition(track, "STABLE_INSIDE", "settle-putback: stable ROI during hold then settled")
+                        event = self._record_putback(track)
+                        # Clear the flag so it cannot fire again if track is revived.
+                        track.putback_hold_stable_roi_seen = False
+                        return [] if event is None else [event]
+            else:
+                # DO NOT reset absent_after_pickup_frames when in ROI post-hold.
+                # The item may briefly re-appear (tracker keeps it alive for a few
+                # frames after the hold window) before truly settling. If we reset
+                # the counter, the settle-putback never fires because the counter
+                # never reaches the threshold after the final disappearance.
+                # Only reset if NOT a settle-putback candidate.
+                if getattr(track, "putback_hold_stable_roi_seen", False):
+                    self._emit_debug(
+                        f"[SETTLE-PUTBACK-ROI] track={track.global_id} still in ROI post-hold "
+                        f"(safe={update.in_safe_roi} stable={update.in_stable_roi} outer={update.in_outer_roi}) "
+                        f"elapsed={time_since_pickup_ms:.0f}ms absent_frames={getattr(track, 'absent_after_pickup_frames', 0)}",
+                        level="info"
+                    )
+                if not getattr(track, "putback_hold_stable_roi_seen", False):
+                    track.absent_after_pickup_frames = 0
+
+            # Require 2 consecutive inward frames after pickup (history cleared on PICKED_UP
+            # transition, so stale pre-pickup inward frames cannot contribute here).
+            has_inward = self._has_sustained_inward_motion(track, min_consecutive=2)
             has_reentry = self._roi_reentry_occurred(update, prev_safe, prev_outer)
-            putback_like = (has_inward and (update.in_stable_roi or update.in_outer_roi or update.in_safe_roi)) or has_reentry or (update.in_stable_roi and time_since_pickup_ms >= self.min_valid_putback_hold_ms)
+            was_absent = getattr(track, "was_absent_after_pickup", False)
+            putback_like = (
+                (has_inward and (update.in_stable_roi or update.in_outer_roi or update.in_safe_roi) and was_absent)
+                or has_reentry
+                or (update.in_stable_roi and time_since_pickup_ms >= self.min_valid_putback_hold_ms and was_absent)
+            )
             if putback_like:
                 matched = self._match_putback_to_pending_pickup(track, update.timestamp_ms)
                 if matched is not None:
@@ -5613,7 +5893,130 @@ class EventManager:
         self._frame_putback_used = defaultdict(int)
         return events
 
+    def _dedup_cross_camera_pickups(self):
+        """
+        Post-processing dedup at finalize time. Two passes:
+
+        Pass 1 — same-camera: two tracks from the SAME camera that both confirm
+        a pickup within SAME_CAM_DEDUP_MS are treated as a tracker glitch (one
+        physical product spawned two tracks). Higher class_lock_score wins; if
+        scores are within CROSS_CAM_LOCK_SCORE_MARGIN, lower global_id wins
+        (more established track).
+
+        Pass 2 — cross-camera: two events from DIFFERENT cameras within
+        CROSS_CAM_DEDUP_MS are treated as the same physical pickup seen from
+        two angles. Higher class_lock_score wins; if within margin, lower
+        camera_id wins (primary camera preferred).
+
+        Both passes use greedy closest-timestamp matching so genuine sequential
+        multi-product pickups are never over-suppressed.
+        """
+        pickups = [e for e in self.session.events if e.get("type") == "pickup"]
+        if len(pickups) <= 1:
+            return
+
+        pickups_by_cam = {}
+        for ev in pickups:
+            pickups_by_cam.setdefault(ev["camera_id"], []).append(ev)
+
+        suppressed_ids = set()
+
+        # ------------------------------------------------------------------
+        # Pass 1: same-camera dedup (tracker glitch — two tracks, one product)
+        # ------------------------------------------------------------------
+        for cam_events in pickups_by_cam.values():
+            sorted_events = sorted(cam_events, key=lambda e: e["timestamp_ms"])
+            for i, ev_a in enumerate(sorted_events):
+                if ev_a["event_id"] in suppressed_ids:
+                    continue
+                for ev_b in sorted_events[i + 1:]:
+                    if ev_b["event_id"] in suppressed_ids:
+                        continue
+                    diff = ev_b["timestamp_ms"] - ev_a["timestamp_ms"]
+                    if diff > SAME_CAM_DEDUP_MS:
+                        break
+                    score_a = ev_a.get("class_lock_score", 0.0)
+                    score_b = ev_b.get("class_lock_score", 0.0)
+                    lock_diff = abs(score_a - score_b)
+                    if lock_diff >= CROSS_CAM_LOCK_SCORE_MARGIN:
+                        winner, loser = (ev_a, ev_b) if score_a >= score_b else (ev_b, ev_a)
+                    else:
+                        # Prefer the more established track (lower global_id)
+                        winner, loser = (ev_a, ev_b) if ev_a["global_id"] <= ev_b["global_id"] else (ev_b, ev_a)
+                    suppressed_ids.add(loser["event_id"])
+                    self._emit_debug(
+                        f"[SAME-CAM-DEDUP] suppressed cam={loser['camera_id']} "
+                        f"gid={loser['global_id']} class={loser['class']} "
+                        f"lock={loser.get('class_lock_score', 0.0):.3f} "
+                        f"| winner gid={winner['global_id']} class={winner['class']} "
+                        f"lock={winner.get('class_lock_score', 0.0):.3f} "
+                        f"lock_diff={lock_diff:.3f} dt={diff:.0f}ms",
+                        level="info",
+                    )
+                    break  # ev_a matched; move to next anchor
+
+        # ------------------------------------------------------------------
+        # Pass 2: cross-camera dedup (both cameras see the same pickup)
+        # ------------------------------------------------------------------
+        cameras = sorted(pickups_by_cam.keys())
+        if len(cameras) >= 2:
+            for i in range(len(cameras)):
+                for j in range(i + 1, len(cameras)):
+                    events_a = sorted(
+                        [e for e in pickups_by_cam[cameras[i]] if e["event_id"] not in suppressed_ids],
+                        key=lambda e: e["timestamp_ms"],
+                    )
+                    events_b = [e for e in pickups_by_cam[cameras[j]] if e["event_id"] not in suppressed_ids]
+                    used_b = set()
+                    for ev_a in events_a:
+                        best_b = None
+                        best_diff = float("inf")
+                        for ev_b in events_b:
+                            if ev_b["event_id"] in used_b:
+                                continue
+                            diff = abs(ev_b["timestamp_ms"] - ev_a["timestamp_ms"])
+                            if diff <= CROSS_CAM_DEDUP_MS and diff < best_diff:
+                                best_diff = diff
+                                best_b = ev_b
+                        if best_b is None:
+                            continue
+                        used_b.add(best_b["event_id"])
+                        score_a = ev_a.get("class_lock_score", 0.0)
+                        score_b = best_b.get("class_lock_score", 0.0)
+                        lock_diff = abs(score_a - score_b)
+                        if lock_diff >= CROSS_CAM_LOCK_SCORE_MARGIN:
+                            if score_a >= score_b:
+                                winner, loser = ev_a, best_b
+                            else:
+                                winner, loser = best_b, ev_a
+                        else:
+                            if ev_a["camera_id"] <= best_b["camera_id"]:
+                                winner, loser = ev_a, best_b
+                            else:
+                                winner, loser = best_b, ev_a
+                        suppressed_ids.add(loser["event_id"])
+                        self._emit_debug(
+                            f"[CROSS-CAM-DEDUP] suppressed cam={loser['camera_id']} "
+                            f"class={loser['class']} lock={loser.get('class_lock_score', 0.0):.3f} "
+                            f"| winner cam={winner['camera_id']} class={winner['class']} "
+                            f"lock={winner.get('class_lock_score', 0.0):.3f} "
+                            f"lock_diff={lock_diff:.3f} dt={best_diff:.0f}ms",
+                            level="info",
+                        )
+
+        if not suppressed_ids:
+            return
+
+        for ev in self.session.events:
+            if ev.get("type") == "pickup" and ev["event_id"] in suppressed_ids:
+                cls = ev.get("event_class") or ev.get("class")
+                if cls and self.pickup_count[cls] > 0:
+                    self.pickup_count[cls] -= 1
+
+        self.session.events = [e for e in self.session.events if e["event_id"] not in suppressed_ids]
+
     def finalize(self):
+        self._dedup_cross_camera_pickups()
         classes = set(self.pickup_count) | set(self.putback_count)
         self.session.pickup_count = dict(self.pickup_count)
         self.session.putback_count = dict(self.putback_count)

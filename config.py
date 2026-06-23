@@ -50,11 +50,11 @@ STABLE_LOST_PICKUP_MS = 100.0
 # -----------------------------------------------------------------------------
 # Motion analysis
 # -----------------------------------------------------------------------------
-MIN_PICKUP_DISPLACEMENT = 8
-MIN_PUTBACK_DISPLACEMENT = 8
-DEADBAND = 9
+MIN_PICKUP_DISPLACEMENT = 5
+MIN_PUTBACK_DISPLACEMENT = 5
+DEADBAND = 5
 MOTION_BUFFER_SIZE = 10
-MOTION_MIN_DEPTH_RATIO = 0.25
+MOTION_MIN_DEPTH_RATIO = 0.15
 ROI_STABLE_EDGE_MARGIN_PX = 140.0
 
 # -----------------------------------------------------------------------------
@@ -120,7 +120,22 @@ DETECTION_MODEL_CONFIDENCE = 0.7
 DETECTION_BATCH_SIZE = 30
 DETECTION_DEBUG_LOG_INTERVAL = 10
 TRACK_CONFIDENCE_HISTORY = 10
-MISSING_PENDING_CONFIRM_MS = 800
+MISSING_PENDING_CONFIRM_MS = 1500
+# Two pickup events from DIFFERENT cameras within this window are treated as the
+# same physical pickup (cross-camera duplicate). The one with higher average
+# confidence is kept; the other is dropped at finalize() time.
+CROSS_CAM_DEDUP_MS = 800
+# When two cameras disagree on class, the one with the higher STABLE_INSIDE
+# lock score wins — BUT only if the difference exceeds this margin. If scores
+# are within this margin, the lower camera ID (cam0) wins as a conservative
+# fallback (avoids trusting a marginally higher score that may reflect camera
+# angle bias rather than genuine class confidence).
+CROSS_CAM_LOCK_SCORE_MARGIN = 0.3
+# Two pickup events from the SAME camera within this window are treated as
+# tracker-glitch duplicates of one physical pickup (e.g. two tracks spawned
+# for the same product). Tighter than CROSS_CAM_DEDUP_MS because same-camera
+# events are time-synchronised — a 500 ms gap is already generous.
+SAME_CAM_DEDUP_MS = 500
 CLASS_RETURN_MAX_GAP_MS = 120000
 PRINT_DEBUG_EVENTS = True
 PRINT_DETECTION_SUMMARY = True
@@ -175,6 +190,26 @@ LEDGER_SAME_GROUP_SCORE = 0.65
 
 LEDGER_SPATIAL_MAX_DISTANCE_PX = 350.0
 LEDGER_EMBEDDING_MIN_SIMILARITY = 0.35
+
+# -----------------------------------------------------------------------------
+# Corner / edge-shelf pickup self-anchor
+# -----------------------------------------------------------------------------
+# Any product in the shelf area (INSIDE or STABLE_INSIDE) for at least this many
+# milliseconds is treated as a genuine shelf item — even if it never reached
+# STABLE_INSIDE (was_stable=False) and no other STABLE_INSIDE track exists.
+#
+# The CONFIRM-OUTER gate and the LOST-INSIDE gate both require an "anchor" to
+# prevent false pickups from transient arm-disturbance detections. Normally this
+# anchor is either was_stable=True or another track currently in STABLE_INSIDE.
+# For products at the physical corner or edge of the machine — where the camera
+# angle only partially covers the stable inner ROI — neither anchor is available.
+# This constant provides a time-based self-anchor as the fallback.
+#
+# 500 ms ≈ 15 frames @ 30 fps:
+#   - Arm-disturbance tracks: first detected DURING arm motion → 0–200 ms dwell → blocked
+#   - Genuine corner shelf products: present for seconds before pickup → accepted
+# Only applies to was_stable=False tracks; was_stable=True tracks are unaffected.
+CORNER_PICKUP_MIN_INSIDE_MS = 500.0
 
 # -----------------------------------------------------------------------------
 # Adaptive thresholds container (unused)
