@@ -406,6 +406,13 @@ def run_pipeline(
     roi0 = load_roi_payload(roi_dir_path / "cam0.json")
     roi1 = load_roi_payload(roi_dir_path / "cam1.json")
 
+    # --- FIX: extract per-camera outward vectors from ROI config ---
+    outward_vec0 = np.asarray(roi0.get("outward_vector", [0.0, 1.0]), dtype=np.float32)
+    outward_vec1 = np.asarray(roi1.get("outward_vector", [0.0, 1.0]), dtype=np.float32)
+
+    outward_vec0 = -outward_vec0   # because pickup is upward
+    outward_vec1 = -outward_vec1
+
     homography = HomographyContext.from_roi_points(roi0["points"], roi1["points"])
     if not homography.active:
         logger.warning("Homography disabled (error %.2f px)", homography.error_px)
@@ -535,13 +542,18 @@ def run_pipeline(
             for track in tracks:
                 if track.current_update is None:
                     continue
-                packet = packets[track.current_update.camera_id]
+                camera_id = track.current_update.camera_id
+                packet = packets[camera_id]
                 canonical_edge_normals = compute_edge_normals(packet.full_roi_polygon)
+
+                # --- FIX: use the per-camera outward vector ---
+                outward_vec = outward_vec0 if camera_id == 0 else outward_vec1
+
                 motion = motion_analyzer.analyze(
                     track,
                     packet.full_roi_polygon,
                     np.asarray(canonical_edge_normals, dtype=np.float32),
-                    np.asarray([0.0, -1.0], dtype=np.float32),
+                    outward_vec,   # <-- now geometry-aware
                 )
                 track.current_update.outward_motion = motion["outward_motion"]
                 track.current_update.inward_motion = motion["inward_motion"]
@@ -605,7 +617,7 @@ def run_pipeline(
                 current_putbacks = sum(event_manager.putback_count.values())
                 current_lines = [f"Current video: Pickups {current_pickups}, Putbacks {current_putbacks}"]
 
-                orig = draw_cumulative_overlay(orig, current_lines, cumulative_lines)
+                orig = draw_cumulative_overlay(orig, current_lines, [])
                 original_preview_frames[camera_id] = orig
 
                 # Warped analysis view
