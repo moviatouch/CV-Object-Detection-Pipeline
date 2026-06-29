@@ -161,6 +161,7 @@ def _iter_detection_ready_bundles(
     detector: YOLODetector,
     *,
     batch_size: int,
+    logger:logging.Logger,
     # [DEBUG] removed debug_logger param – we log detections in the main loop
 ) -> Generator[dict, None, None]:
     """
@@ -219,7 +220,7 @@ def _iter_detection_ready_bundles(
         # ==========================================================
         # BATCH DETECTION
         # ==========================================================
-        print(
+        logger.info(
             f"[BATCH DETECTION] "
             f"frames={len(original_frames)} "
             f"bundles={len(bundles)}"
@@ -399,8 +400,8 @@ def run_pipeline(
     cumulative_stats = CumulativeStats(cumulative_stats_path)
     cumulative_lines = cumulative_stats.get_display_lines()
     if cumulative_stats.data["videos_processed"] > 0:
-        print(f"Previously processed videos: {cumulative_stats.data['videos_processed']}")
-        print(cumulative_stats.get_summary_line())
+        logger.info(f"Previously processed videos: {cumulative_stats.data['videos_processed']}")
+        logger.info(cumulative_stats.get_summary_line())
 
     roi_dir_path = Path(roi_dir)
     roi0 = load_roi_payload(roi_dir_path / "cam0.json")
@@ -448,7 +449,7 @@ def run_pipeline(
         if show_preview:
             cv2.namedWindow(PREVIEW_WINDOW_NAME, cv2.WINDOW_NORMAL)
 
-        bundle_iterator = _iter_detection_ready_bundles(reader, detector, batch_size=det_batch_size)   # no debug_logger param
+        bundle_iterator = _iter_detection_ready_bundles(reader, detector, batch_size=det_batch_size,logger=logger)   # no debug_logger param
 
         while True:
             bundle = next(bundle_iterator, None)
@@ -522,7 +523,7 @@ def run_pipeline(
                 if packet.frame_index % DETECTION_DEBUG_LOG_INTERVAL == 0:
                     logger.debug("cam=%s frame=%s projected=%s", camera_id, packet.frame_index, len(detections))
                     if PRINT_DETECTION_SUMMARY:
-                        print(f"[DETECTION] cam={camera_id} frame={packet.frame_index} projected={len(detections)}")
+                        logger.info(f"[DETECTION] cam={camera_id} frame={packet.frame_index} projected={len(detections)}")
 
             timestamp_ms = max(p.timestamp_ms for p in packets.values())
 
@@ -569,7 +570,7 @@ def run_pipeline(
                 if PRINT_TRACK_STATUS and packet.frame_index % TRACK_STATUS_INTERVAL == 0:
                     dvec = tuple(float(v) for v in track.current_update.displacement_vector)
                     enormal = tuple(float(v) for v in track.current_update.edge_normal)
-                    print(f"[TRACK_STATUS] cam={track.current_update.camera_id} gid={track.global_id} "
+                    logger.info(f"[TRACK_STATUS] cam={track.current_update.camera_id} gid={track.global_id} "
                           f"class={track.class_name} state={track.event_state} "
                           f"safe={track.current_update.in_safe_roi} outer={track.current_update.in_outer_roi} "
                           f"outward={track.current_update.outward_motion} inward={track.current_update.inward_motion} "

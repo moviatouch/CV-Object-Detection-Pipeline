@@ -6,9 +6,6 @@ from typing import Optional, Sequence
 import cv2
 import numpy as np
 
-# SHAKE_FLOW_THRESHOLD and GlobalMotionEstimator removed
-
-
 def propagate_bbox_lk(
     prev_gray: np.ndarray | None,
     gray: np.ndarray | None,

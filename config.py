@@ -61,6 +61,8 @@ QUICK_RETURN_THRESHOLD_MS = 0
 
 STABLE_LOST_PICKUP_MS = 100.0
 
+PUTBACK_STABLE_FRAMES = 5
+
 # -----------------------------------------------------------------------------
 # Motion analysis
 # -----------------------------------------------------------------------------
@@ -74,8 +76,8 @@ ROI_STABLE_EDGE_MARGIN_PX = 140.0
 # -----------------------------------------------------------------------------
 # Ghost track (lost object revival)
 # -----------------------------------------------------------------------------
-MAX_LOST_SECONDS = 5.0
-RESERVED_SECONDS = 10.0
+MAX_LOST_SECONDS = 300
+RESERVED_SECONDS = 60.0
 REVIVAL_EMBEDDING_THRESHOLD = 0.6
 REVIVAL_SPATIAL_THRESHOLD = 100
 REVIVAL_ANGLE_THRESHOLD = 45
@@ -111,12 +113,6 @@ ENFORCE_CLASS_CONSISTENCY = True
 TEMPORAL_IOU_THRESHOLD = 0.1
 LOCAL_TRACK_MAX_DISTANCE_NORM = 2.5
 LOCAL_TRACK_MIN_SIMILARITY = 0.45
-
-# -----------------------------------------------------------------------------
-# Merging overlapping tracks
-# -----------------------------------------------------------------------------
-MERGE_IOU_THRESHOLD = 0.8
-MERGE_FRAMES = 5
 
 # -----------------------------------------------------------------------------
 # Rate limiting
