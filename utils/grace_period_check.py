@@ -73,7 +73,7 @@ def get_planogram(base_url: str, access_token: str) -> dict:
 
 def change_line_items(access_token: str, base_url: str, transaction_id: str, body: dict) -> bool:
     """PATCH updated line items to the loyalty API."""
-    url = f"{base_url}/loyalty/orders/{transaction_id}"
+    url = f"{base_url}/loyalty/orders/cv/{transaction_id}"
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
@@ -82,6 +82,7 @@ def change_line_items(access_token: str, base_url: str, transaction_id: str, bod
     response = requests.patch(url, headers=headers, json=body)
     if response.status_code == 200:
         logger.info("Grace Period: PATCH successful")
+        logger.info(response.json())
         return True
     else:
         logger.error(f"PATCH failed: {response.status_code} {response.text}")
@@ -197,6 +198,7 @@ def build_downcharge_ops(line_items: list[dict], picked_counter: Counter, valid_
                 "shelf_row": row,
                 "shelf_column": col,
                 "op_type": "delete",
+                "cv_intent" : "CORRECTION"
             })
         elif 0 < target_qty < current_qty:
             ops.append({
@@ -204,6 +206,7 @@ def build_downcharge_ops(line_items: list[dict], picked_counter: Counter, valid_
                 "shelf_row": row,
                 "shelf_column": col,
                 "op_type": "update",
+                "cv_intent" : "CORRECTION"
             })
 
     return ops
@@ -259,6 +262,7 @@ def build_upcharge_ops(
             "shelf_row": slot["shelf_row"],
             "shelf_column": slot["shelf_column"],
             "op_type": "add",
+            "cv_intent" : "CORRECTION"
         })
 
     return ops

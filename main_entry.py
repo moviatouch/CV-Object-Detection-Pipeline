@@ -59,7 +59,7 @@ def get_order_line_items(trans_id: str) -> List[Dict]:
     order = get_current_line_items(base_url, trans_id, access_token)
     # The response structure may vary; we need the line_items list.
     # Adjust based on actual response (e.g., order.get('line_items', []))
-    return order.get('line_items', [])
+    return order.get('invoice', {}).get('line_items', [])
 
 def create_user_activities_json(trans_id: str, transid_folder: str, line_items: List[Dict]) -> str:
     """Create user_actvities.json in transaction folder."""
