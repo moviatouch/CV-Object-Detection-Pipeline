@@ -152,6 +152,11 @@ class GlobalRegistry:
     def _candidate_cost(self, track: GlobalTrack, observation: TrackObservation, homography_active: bool) -> float:
         if ENFORCE_CLASS_CONSISTENCY and track.class_id != observation.class_id:
             return 1e6
+        if track.is_picked:
+            # Only block if observation is from the same camera as the last known position.
+            # For different cameras, allow if homography is reliable.
+            if observation.camera_id == track.last_camera_id:
+                return 1e6
 
         if track.current_update is not None and track.current_update.camera_id == observation.camera_id:
             temporal_iou = bbox_iou(track.current_update.bbox, observation.bbox)

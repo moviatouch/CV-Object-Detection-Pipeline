@@ -167,6 +167,9 @@ class EventManager:
             else:
                 track.created_ms = 0.0
 
+        if not hasattr(track, "is_picked"):
+            track.is_picked = False
+
     def _is_valid_class(self, class_name):
         return bool(class_name) and class_name != UNKNOWN_UNSTABLE_CLASS
 
@@ -243,6 +246,7 @@ class EventManager:
 
         if new_state == "STABLE_INSIDE":
             track.was_stable = True
+            track.is_picked = False
             self._lock_class_if_possible(track, reason="entered STABLE_INSIDE")
 
         if new_state in {"PICKUP_PENDING", "PUTBACK_PENDING"}:
@@ -1309,6 +1313,7 @@ class EventManager:
             f"conf={conf_values} ledger_id={ledger_item['ledger_id']}",
             level="info",
         )
+        track.is_picked = True
 
         if self.debug_logger is not None and hasattr(self.debug_logger, "log_event_fired"):
             self.debug_logger.log_event_fired(
@@ -1501,6 +1506,7 @@ class EventManager:
             f"conf={conf_values} matched_ledger={matched_item['ledger_id'] if matched_item else None}",
             level="info",
         )
+        track.is_picked = False
 
         if self.debug_logger is not None and hasattr(self.debug_logger, "log_event_fired"):
             self.debug_logger.log_event_fired(
