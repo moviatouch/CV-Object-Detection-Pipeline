@@ -128,6 +128,8 @@ class GlobalTrack:
     #   "in_safe_roi": bool,
     #   "in_outer_roi": bool,
     # }
+
+    is_picked: bool = False
     class_votes: Deque[dict] = field(default_factory=lambda: deque(maxlen=30))
 
     # Class votes specifically collected during pickup/putback confirmation.
