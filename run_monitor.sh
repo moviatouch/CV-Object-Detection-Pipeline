@@ -18,7 +18,7 @@ echo "----------------------------------------"
 #   -e POST_ARCHIVE_PATH=/app/post_archive \
 #   -e MOCK_API=false \
 #   viatouch-cv-pipeline:latest \
-#   python3 monitor.py
+#   python3 scripts/monitor.py
 
 docker build -t viatouch-cv-pipeline:latest .
 
@@ -33,6 +33,6 @@ docker create  \
   -e POST_ARCHIVE_PATH=/app/post_archive \
   -e MOCK_API=false \
   viatouch-cv-pipeline:latest \
-  python3 monitor.py
+  python3 scripts/monitor.py
 
 docker start viatouch_cv

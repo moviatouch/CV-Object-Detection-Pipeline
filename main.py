@@ -65,7 +65,7 @@ from utils.visualization import (
 )
 
 # [DEBUG] Import the debug logger
-from debug_logger import DebugLogger
+from utils.debug_logger import DebugLogger
 
 
 @dataclass
