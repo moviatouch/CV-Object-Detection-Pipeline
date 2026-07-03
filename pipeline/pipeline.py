@@ -30,6 +30,7 @@ from config import (
     SHOW_PREVIEW,
     TRACK_STATUS_INTERVAL,
     WARP_SIZE,
+    RESIZE_VIDEO
 )
 from detection.rtdetr_wrapper import YOLODetector
 from detection.reid import ReIDModel
@@ -430,7 +431,7 @@ def run_pipeline(
         for cam in (0, 1):
             fps = reader.fps(cam)
             writer_path = OUTPUT_PATHS.annotated_videos / f"{session_id}_cam{cam}.mp4"
-            video_writers[cam] = AnnotatedVideoWriter(writer_path, fps=fps, frame_size=reader.frame_size(cam))
+            video_writers[cam] = AnnotatedVideoWriter(writer_path, fps=fps, frame_size=reader.frame_size(cam), resize_to=RESIZE_VIDEO)
 
     try:
         if show_preview:
