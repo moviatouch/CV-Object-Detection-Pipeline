@@ -7,6 +7,11 @@ from typing import Dict, Optional
 import cv2
 import numpy as np
 
+
+import subprocess
+from pathlib import Path
+
+
 from config import DESYNC_TOLERANCE_FRAMES  # Only sync tolerance remains
 from utils.roi_utils import as_np, warp_frame
 from utils.types import FramePacket
@@ -153,29 +158,194 @@ class SynchronizedVideoReader:
             "desync_frames": desync_frames,
         }
 
-
 class AnnotatedVideoWriter:
     """
     Simple wrapper for writing annotated output videos (e.g., with drawn tracks and events).
+
+    Pure cv2.VideoWriter - no ffmpeg subprocess. NOTE: as established earlier, whether
+    this actually produces real H.264 depends entirely on how your OpenCV build's
+    FFmpeg backend was compiled (most pip opencv-python wheels do NOT include libx264,
+    see prior discussion). Verify with verify_avc1.py on your target machine before
+    relying on this for dashboard uploads - if it doesn't work, use the
+    ffmpeg-subprocess version (annotated_video_writer.py) instead.
     """
 
-    def __init__(self, path: str | Path, fps: float, frame_size: tuple[int, int]) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        fps: float,
+        frame_size: tuple[int, int],
+        resize_to: tuple[int, int] | None = None,
+        fourcc: str = "mp4v",
+    ) -> None:
         """
         Args:
             path: Output file path.
             fps: Frames per second.
-            frame_size: (width, height) of the video.
+            frame_size: (width, height) of the frames you will pass to write().
+                This is the ORIGINAL frame size, e.g. straight from your source video.
+            resize_to: Optional (width, height) from config, e.g. RESIZE_WIDTH/RESIZE_HEIGHT.
+                If set, each frame passed to write() is resized to fit within this box
+                (aspect ratio preserved, letterboxed with black padding to hit the exact
+                size) before encoding. The output video's actual dimensions become
+                resize_to. If None, frames are encoded at frame_size unchanged.
+            fourcc: Codec fourcc string. Default "mp4v" (matches original behavior,
+                guaranteed to work everywhere but is NOT H.264). Try "avc1" for H.264 -
+                verify it actually opens and check the resulting file with ffprobe,
+                since it can silently fail or fall back on some builds.
         """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        self.writer = cv2.VideoWriter(str(path), fourcc, fps, frame_size)
         self.path = path
 
+        self.input_size = frame_size          # (width, height) caller will write() at
+        self.resize_to = resize_to            # (width, height) target, or None
+        self.output_size = resize_to or frame_size
+
+        fourcc_code = cv2.VideoWriter_fourcc(*fourcc)
+        self.writer = cv2.VideoWriter(str(path), fourcc_code, fps, self.output_size)
+
+        if not self.writer.isOpened():
+            raise RuntimeError(
+                f"Failed to open cv2.VideoWriter with fourcc='{fourcc}' for {path}. "
+                "Your OpenCV build likely doesn't support this codec - "
+                "check with verify_avc1.py, or use the ffmpeg-subprocess writer instead."
+            )
+
+    def _resize_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Resize a frame to fit within self.resize_to, preserving aspect ratio,
+        letterboxed with black padding to hit the exact target size."""
+        target_w, target_h = self.resize_to
+        h, w = frame.shape[:2]
+
+        scale = min(target_w / w, target_h / h)
+        new_w, new_h = max(int(w * scale), 1), max(int(h * scale), 1)
+
+        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        canvas = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+        x_off = (target_w - new_w) // 2
+        y_off = (target_h - new_h) // 2
+        canvas[y_off:y_off + new_h, x_off:x_off + new_w] = resized
+        return canvas
+
     def write(self, frame: np.ndarray) -> None:
-        """Write a single frame."""
+        """Write a single BGR frame (resized first if resize_to was set)."""
+        if self.resize_to is not None:
+            frame = self._resize_frame(frame)
         self.writer.write(frame)
 
     def close(self) -> None:
         """Release the video writer."""
         self.writer.release()
+
+
+# class AnnotatedVideoWriter:
+#     """
+#     Simple wrapper for writing annotated output videos (e.g., with drawn tracks and events).
+
+#     Streams frames directly to an ffmpeg subprocess encoding real H.264 (libx264,
+#     yuv420p) - no cv2 codec fallback issues, no intermediate file, constant memory
+#     regardless of video length.
+
+#     Requires the system `ffmpeg` binary to be installed and on PATH
+#     (e.g. `apt-get install -y ffmpeg`), with libx264 support
+#     (check via `ffmpeg -codecs | grep libx264`).
+#     """
+
+#     def __init__(
+#         self,
+#         path: str | Path,
+#         fps: float,
+#         frame_size: tuple[int, int],
+#         resize_to: tuple[int, int] | None = None,
+#     ) -> None:
+#         """
+#         Args:
+#             path: Output file path.
+#             fps: Frames per second.
+#             frame_size: (width, height) of the frames you will pass to write().
+#                 This is the ORIGINAL frame size, e.g. straight from your source video.
+#             resize_to: Optional (width, height) from config, e.g. RESIZE_WIDTH/RESIZE_HEIGHT.
+#                 If set, each frame passed to write() is resized to fit within this box
+#                 (aspect ratio preserved, letterboxed with black padding to hit the exact
+#                 size) before encoding. The output video's actual dimensions become
+#                 resize_to. If None, frames are encoded at frame_size unchanged.
+#         """
+#         path = Path(path)
+#         path.parent.mkdir(parents=True, exist_ok=True)
+#         self.path = path
+#         self._closed = False
+
+#         self.input_size = frame_size          # (width, height) caller will write() at
+#         self.resize_to = resize_to            # (width, height) target, or None
+#         self.output_size = resize_to or frame_size
+
+#         out_width, out_height = self.output_size
+
+#         cmd = [
+#             "ffmpeg", "-y",
+#             "-f", "rawvideo",
+#             "-vcodec", "rawvideo",
+#             "-pix_fmt", "bgr24",          # matches cv2's native frame format
+#             "-s", f"{out_width}x{out_height}",
+#             "-r", str(fps),
+#             "-i", "-",
+#             "-an",
+#             "-c:v", "libx264",
+#             "-pix_fmt", "yuv420p",        # web/browser/dashboard compatible
+#             "-movflags", "+faststart",
+#             str(path),
+#         ]
+
+#         try:
+#             self.proc = subprocess.Popen(
+#                 cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE
+#             )
+#         except FileNotFoundError as e:
+#             raise RuntimeError(
+#                 "ffmpeg binary not found. Install it with `apt-get install -y ffmpeg` "
+#                 "(or your distro's equivalent) and ensure it's on PATH."
+#             ) from e
+
+#     def _resize_frame(self, frame: np.ndarray) -> np.ndarray:
+#         """Resize a frame to fit within self.resize_to, preserving aspect ratio,
+#         letterboxed with black padding to hit the exact target size (ffmpeg
+#         requires every frame to match the -s dimensions exactly)."""
+#         target_w, target_h = self.resize_to
+#         h, w = frame.shape[:2]
+
+#         scale = min(target_w / w, target_h / h)
+#         new_w, new_h = max(int(w * scale), 1), max(int(h * scale), 1)
+
+#         resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+#         canvas = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+#         x_off = (target_w - new_w) // 2
+#         y_off = (target_h - new_h) // 2
+#         canvas[y_off:y_off + new_h, x_off:x_off + new_w] = resized
+#         return canvas
+
+#     def write(self, frame: np.ndarray) -> None:
+#         """Write a single BGR frame (resized first if resize_to was set)."""
+#         if self._closed:
+#             raise RuntimeError("Cannot write: writer is already closed.")
+#         if self.resize_to is not None:
+#             frame = self._resize_frame(frame)
+#         self.proc.stdin.write(frame.tobytes())
+
+#     def close(self) -> None:
+#         """Flush and release the video writer, raising if ffmpeg failed."""
+#         if self._closed:
+#             return
+#         self._closed = True
+
+#         self.proc.stdin.close()
+#         stderr = self.proc.stderr.read()
+#         ret = self.proc.wait()
+
+#         if ret != 0:
+#             raise RuntimeError(
+#                 f"ffmpeg failed (exit code {ret}) writing {self.path}:\n"
+#                 f"{stderr.decode(errors='ignore')}"
+#             )

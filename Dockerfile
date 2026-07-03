@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     python3-dev \
     ninja-build \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first to leverage Docker layer caching
@@ -41,4 +42,4 @@ RUN mkdir -p models && \
 VOLUME ["/app/models", "/app/outputs"]
 
 # Set the default entrypoint to run main.py
-CMD ["python3", "monitor.py"]
+CMD ["python3", "main.py"]

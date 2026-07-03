@@ -218,55 +218,58 @@ def build_upcharge_ops(
     valid_products_cleaned: list[str],
     planogram_lookup: dict,
 ) -> list[dict]:
-    """
-    Build PATCH operations for products that were picked MORE than what's
-    currently on the order — either a brand-new product not in line_items
-    at all, or an existing line item where picked qty > charged qty.
-
-    Since a brand-new product has no shelf_row/shelf_column on the order
-    yet, we pull its location from the planogram lookup.
-
-    - Product not in line_items at all, but picked → add op (full picked qty)
-    - Product in line_items, but picked MORE than charged → add op (the delta)
-    """
     ops = []
 
-    # Map cleaned name -> current charged qty, for products already on the order
-    charged_qty_by_product = defaultdict(int)
+    # Track both qty AND shelf location for existing line items
+    existing_by_product = {}
     for li in line_items:
         pname_clean = clean_name(li.get("product_name", ""))
         if pname_clean in valid_products_cleaned:
-            charged_qty_by_product[pname_clean] += int(li.get("quantity", 0))
+            existing_by_product[pname_clean] = {
+                "qty": existing_by_product.get(pname_clean, {}).get("qty", 0) + int(li.get("quantity", 0)),
+                "shelf_row": li.get("shelf_row"),
+                "shelf_column": li.get("shelf_column"),
+            }
 
     for product, picked_qty in picked_counter.items():
         if product not in valid_products_cleaned:
-            continue  # not a real/known product, skip
+            continue
 
-        current_qty = charged_qty_by_product.get(product, 0)
+        existing = existing_by_product.get(product)
+        current_qty = existing["qty"] if existing else 0
 
         if picked_qty <= current_qty:
-            continue  # no upcharge needed for this product
+            continue
 
         delta_qty = picked_qty - current_qty
 
-        slot = planogram_lookup.get(product)
-        if not slot:
-            logger.warning(
-                f"Cannot upcharge '{product}': picked {picked_qty}, charged {current_qty}, "
-                f"but no planogram slot found for this product. Skipping."
-            )
-            continue
-
-        ops.append({
-            "quantity": delta_qty,
-            "shelf_row": slot["shelf_row"],
-            "shelf_column": slot["shelf_column"],
-            "op_type": "add",
-            "cv_intent" : "CORRECTION"
-        })
+        if existing:
+            # Already on the order — bump the existing line item instead of adding a new one
+            ops.append({
+                "quantity": picked_qty,          # or delta_qty, depending on what "update" expects (total vs delta)
+                "shelf_row": existing["shelf_row"],
+                "shelf_column": existing["shelf_column"],
+                "op_type": "update",
+                "cv_intent": "CORRECTION",
+            })
+        else:
+            # Genuinely new product — need a planogram slot
+            slot = planogram_lookup.get(product)
+            if not slot:
+                logger.warning(
+                    f"Cannot upcharge '{product}': picked {picked_qty}, charged {current_qty}, "
+                    f"but no planogram slot found for this product. Skipping."
+                )
+                continue
+            ops.append({
+                "quantity": delta_qty,
+                "shelf_row": slot["shelf_row"],
+                "shelf_column": slot["shelf_column"],
+                "op_type": "add",
+                "cv_intent": "CORRECTION",
+            })
 
     return ops
-
 
 # ---------------------------------------------------------------------------
 # Main entry point
