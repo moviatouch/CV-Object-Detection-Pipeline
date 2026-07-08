@@ -1,16 +1,5 @@
 #!/bin/bash
 
-cd "$(dirname "$0")"
-
-echo "📡 Starting Viatouch CV Pipeline Monitor"
-echo "----------------------------------------"
-echo "Watching: /home/cv-nx/cv_pipeline/camera-preview-pipeline/post_archive"
-echo "Press Ctrl+C to stop."
-echo "----------------------------------------"
-
-
-
-
 current_dir=$(pwd)
 current_dir=${current_dir%/scripts}
 
@@ -37,7 +26,7 @@ docker create  \
   -v ${current_dir}/models:/app/models \
   -v ${current_dir}/outputs:/app/outputs \
   -v ${current_dir}/videos:/app/videos \
-  -v /home/cv-nx/cv_pipeline/camera-preview-pipeline/post_archive:/app/post_archive \
+  -v ${current_dir}/../camera-preview-pipeline/post_archive:/app/post_archive \
   -e POST_ARCHIVE_PATH=/app/post_archive \
   -e MOCK_API=false \
   viatouch-cv-pipeline:latest
