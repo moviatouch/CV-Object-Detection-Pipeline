@@ -364,6 +364,7 @@ def run_pipeline(
     video0: str,
     video1: str,
     session_id: str,
+    logger,
     device: str = "cpu",
     roi_dir: str = ROI_CONFIG_DIR,
     model_path: str = MODEL_PATH,
@@ -374,7 +375,7 @@ def run_pipeline(
     preview_panel_size: Tuple[int, int] = (960, 540),
 ) -> PipelineResult:
     timestamp_tag = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    logger = setup_logger(OUTPUT_PATHS.logs / f"{session_id}_{timestamp_tag}.log")
+    # logger = setup_logger(OUTPUT_PATHS.logs / f"{session_id}_{timestamp_tag}.log")
     metrics_tracker = MetricsTracker(session_id=session_id, logger=logger)
 
     # [DEBUG] Create debug logger

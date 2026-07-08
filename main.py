@@ -10,10 +10,14 @@ from pipeline.pipeline import run_pipeline, PipelineResult
 from utils.media_uploader import upload_video
 from utils.grace_period_check import run_grace_period_check, get_current_line_items
 from utils import login
-from config import VICKI_APP, MODEL_TO_DASHBOARD_MAPPING
+from datetime import datetime
+from config import VICKI_APP, MODEL_TO_DASHBOARD_MAPPING, OUTPUT_PATHS
 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+
+
+from utils.logger import setup_logger
 
 # Setup logger
 logger = logging.getLogger(__name__)
@@ -136,11 +140,11 @@ def get_all_config_products() -> List[str]:
     """Return all dashboard product names (planogram names)."""
     return list(MODEL_TO_DASHBOARD_MAPPING.values())
 
-def get_order_line_items(trans_id: str) -> List[Dict]:
+def get_order_line_items(trans_id: str, logger) -> List[Dict]:
     """Fetch current order line items from loyalty API."""
     base_url, machine_id, machine_token, machine_api_key = login.get_custom_machine_settings(VICKI_APP, logger)
     access_token = login.get_current_access_token(base_url, machine_id, machine_token, machine_api_key, logger)
-    order = get_current_line_items(base_url, trans_id, access_token)
+    order = get_current_line_items(base_url, trans_id, access_token, logger)
     # The response structure may vary; we need the line_items list.
     # Adjust based on actual response (e.g., order.get('line_items', []))
     return order.get('invoice', {}).get('line_items', [])
@@ -173,22 +177,26 @@ def build_cv_activities(pipeline_result: PipelineResult) -> List[Dict[str, str]]
 
 def process_transaction(trans_id: str, transid_folder: str, customer_trans: str = 'True'):
     """Main orchestration for a transaction."""
-    logger.info(f"Processing transaction {trans_id} in {transid_folder}")
+
+    timestamp_tag = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    transaction_logger = setup_logger(OUTPUT_PATHS.logs / f"{trans_id}_{timestamp_tag}.log")
+    transaction_logger.info(f"Processing transaction {trans_id} in {transid_folder}")
 
     # Step 1: Locate videos
     try:
         video0, video1 = get_video_paths(transid_folder)
     except Exception as e:
-        logger.error(f"Error locating videos: {e}")
+        transaction_logger.error(f"Error locating videos: {e}")
         return
 
     # Step 2: Run CV pipeline
-    logger.info(f"Running pipeline on {video0} and {video1}")
+    transaction_logger.info(f"Running pipeline on {video0} and {video1}")
     try:
         pipeline_result = run_pipeline(
             video0=video0,
             video1=video1,
             session_id=trans_id,
+            logger=transaction_logger,
             device="cuda",                  # or "cpu" if no GPU
             roi_dir="config/roi",
             model_path="models/best_10_6.pt",
@@ -199,11 +207,11 @@ def process_transaction(trans_id: str, transid_folder: str, customer_trans: str 
             preview_panel_size=(960, 540)
         )
     except Exception as e:
-        logger.error(f"Pipeline failed: {e}")
+        transaction_logger.error(f"Pipeline failed: {e}")
         return
 
     if not pipeline_result.completed:
-        logger.error(f"Pipeline did not complete successfully for {trans_id}")
+        transaction_logger.error(f"Pipeline did not complete successfully for {trans_id}")
         return
 
     # Step 3: Build activities and net summary
@@ -216,13 +224,13 @@ def process_transaction(trans_id: str, transid_folder: str, customer_trans: str 
         "total_putback": pipeline_result.putback_total,
         "net_inventory": pipeline_result.net_inventory,
     }
-    logger.info(f"Net summary: {net_summary}")
+    transaction_logger.info(f"Net summary: {net_summary}")
 
     # Step 4: Fetch order and create user_activities.json
     try:
-        line_items = get_order_line_items(trans_id)
+        line_items = get_order_line_items(trans_id, transaction_logger)
     except Exception as e:
-        logger.error(f"Failed to fetch order line items: {e}")
+        transaction_logger.error(f"Failed to fetch order line items: {e}")
         # Proceed with empty line_items? The grace period will fetch again anyway.
         line_items = []
     user_activities_path = create_user_activities_json(trans_id, transid_folder, line_items)
@@ -234,27 +242,28 @@ def process_transaction(trans_id: str, transid_folder: str, customer_trans: str 
             transaction_id=trans_id,
             json_file=user_activities_path,
             cv_activities=cv_activities,
-            all_config_products=all_config_products
+            all_config_products=all_config_products,
+            logger=transaction_logger
         )
     except Exception as e:
-        logger.error(f"Grace period check failed: {e}")
+        transaction_logger.error(f"Grace period check failed: {e}")
 
     # Step 6: Upload media (zip + upload)
     try:
         upload_video(
-            logger=logger,
+            logger=transaction_logger,
             trans_id=trans_id,
             post_transid=trans_id,
             transid_folder=transid_folder,
             customer_trans=customer_trans
         )
     except Exception as e:
-        logger.error(f"Media upload failed: {e}")
+        transaction_logger.error(f"Media upload failed: {e}")
 
     # Mark as processed (to avoid re-processing)
     with open(os.path.join(transid_folder, "processed.txt"), 'w') as f:
         f.write("processed")
-    logger.info(f"Transaction {trans_id} processing finished.")
+    transaction_logger.info(f"Transaction {trans_id} processing finished.")
 
 
 

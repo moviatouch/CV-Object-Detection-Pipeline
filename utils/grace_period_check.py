@@ -10,31 +10,6 @@ from utils import login
 from config import VICKI_APP
 
 # ---------------------------------------------------------------------------
-# Logging setup
-# ---------------------------------------------------------------------------
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-
-file_handler = logging.FileHandler("grace_period.log")
-file_handler.setLevel(logging.DEBUG)
-
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-console_handler.setFormatter(formatter)
-file_handler.setFormatter(formatter)
-
-logger.addHandler(console_handler)
-logger.addHandler(file_handler)
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 def clean_name(name: str) -> str:
@@ -42,14 +17,14 @@ def clean_name(name: str) -> str:
     return ''.join(re.findall(r'[a-zA-Z]+', name)).lower()
 
 
-def get_access_token(base_url: str, machine_id: str, machine_token: str, machine_api_key: str) -> str:
+def get_access_token(base_url: str, machine_id: str, machine_token: str, machine_api_key: str, logger: logging.Logger) -> str:
     return login.get_current_access_token(base_url, machine_id, machine_token, machine_api_key, logger)
 
 
 # ---------------------------------------------------------------------------
 # API calls
 # ---------------------------------------------------------------------------
-def get_current_line_items(base_url: str, transaction_id: str, access_token: str) -> dict:
+def get_current_line_items(base_url: str, transaction_id: str, access_token: str, logger: logging.Logger) -> dict:
     """Fetch the current order from the loyalty API."""
     url = f"{base_url}/loyalty/orders/{transaction_id}"
     headers = {"Authorization": f"Bearer {access_token}"}
@@ -59,7 +34,7 @@ def get_current_line_items(base_url: str, transaction_id: str, access_token: str
     return response.json()
 
 
-def get_planogram(base_url: str, access_token: str) -> dict:
+def get_planogram(base_url: str, access_token: str, logger: logging.Logger) -> dict:
     """Fetch the machine's planogram so we can locate (row, column) for
     products that don't currently appear in the order's line items."""
     url = f"{base_url}/loyalty/machines/planogram"
@@ -71,7 +46,7 @@ def get_planogram(base_url: str, access_token: str) -> dict:
     return response.json()
 
 
-def change_line_items(access_token: str, base_url: str, transaction_id: str, body: dict) -> bool:
+def change_line_items(access_token: str, base_url: str, transaction_id: str, body: dict, logger: logging.Logger) -> bool:
     """PATCH updated line items to the loyalty API."""
     url = f"{base_url}/loyalty/orders/cv/{transaction_id}"
     headers = {
@@ -89,7 +64,7 @@ def change_line_items(access_token: str, base_url: str, transaction_id: str, bod
         return False
 
 
-def get_updated_line_items(base_url: str, transaction_id: str, access_token: str) -> None:
+def get_updated_line_items(base_url: str, transaction_id: str, access_token: str, logger: logging.Logger) -> None:
     """Log the line items after an update for verification."""
     url = f"{base_url}/loyalty/orders/{transaction_id}"
     headers = {"Authorization": f"Bearer {access_token}"}
@@ -217,6 +192,7 @@ def build_upcharge_ops(
     picked_counter: Counter,
     valid_products_cleaned: list[str],
     planogram_lookup: dict,
+    logger: logging.Logger,
 ) -> list[dict]:
     ops = []
 
@@ -279,6 +255,7 @@ def run_grace_period_check(
     json_file: str,
     cv_activities: list[dict],
     all_config_products: list,
+    logger: logging.Logger,
 ) -> bool:
     """
     Full grace-period check:
@@ -291,6 +268,8 @@ def run_grace_period_check(
         json_file:       Path to the user_activity JSON file.
         cv_activities:   List of CV event dicts e.g. [{"USER_PICKUP": "Quest Chips"}]
         all_config_products: List of product name strings from the planogram config.
+        logger:          Logger to use for all logging in this run, so output
+                          lands in the caller's log file.
 
     Returns:
         True if alert was sent (mismatch), False if everything matched.
@@ -319,7 +298,7 @@ def run_grace_period_check(
     logger.info("⚠️  Mismatch detected. Building downcharge/upcharge operations...")
 
     base_url, machine_id, machine_token, machine_api_key = login.get_custom_machine_settings(VICKI_APP, logger)
-    access_token = get_access_token(base_url, machine_id, machine_token, machine_api_key)
+    access_token = get_access_token(base_url, machine_id, machine_token, machine_api_key, logger)
 
     downcharge_ops = build_downcharge_ops(line_items, picked_counter, valid_cleaned)
 
@@ -332,21 +311,19 @@ def run_grace_period_check(
     )
 
     if needs_upcharge:
-        planogram_json = get_planogram(base_url, access_token)
+        planogram_json = get_planogram(base_url, access_token, logger)
         planogram_lookup = build_planogram_lookup(planogram_json)
-        upcharge_ops = build_upcharge_ops(line_items, picked_counter, valid_cleaned, planogram_lookup)
+        upcharge_ops = build_upcharge_ops(line_items, picked_counter, valid_cleaned, planogram_lookup, logger)
 
     ops = downcharge_ops + upcharge_ops
-    print(ops)
+    logger.debug(f"Computed ops: {ops}")
     if ops:
         body = {"line_items": ops}
         logger.info(f"Downcharge ops: {downcharge_ops}")
         logger.info(f"Upcharge ops: {upcharge_ops}")
-        change_line_items(access_token, base_url, transaction_id, body)
-        get_updated_line_items(base_url, transaction_id, access_token)
+        change_line_items(access_token, base_url, transaction_id, body, logger)
+        get_updated_line_items(base_url, transaction_id, access_token, logger)
     else:
         logger.info("No downcharge/upcharge operations required (quantities already correct).")
 
     return True
-
-

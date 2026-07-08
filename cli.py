@@ -1,6 +1,9 @@
 
 import argparse
 from pipeline.pipeline import run_pipeline
+from utils.logger import setup_logger
+from config import VICKI_APP, MODEL_TO_DASHBOARD_MAPPING, OUTPUT_PATHS
+from datetime import datetime
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Vending pickup/putback detector.")
@@ -18,10 +21,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+
+    timestamp_tag = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    transaction_logger = setup_logger(OUTPUT_PATHS.logs / f"{args.session_id,}_{timestamp_tag}.log")
+
     run_pipeline(
         video0=args.video0,
         video1=args.video1,
         session_id=args.session_id,
+        logger=transaction_logger,
         device=args.device,
         roi_dir=args.roi_dir,
         model_path=args.model_path,
